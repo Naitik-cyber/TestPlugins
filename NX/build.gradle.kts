@@ -6,3 +6,4 @@ cloudstream {
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
 }
+//trigger
