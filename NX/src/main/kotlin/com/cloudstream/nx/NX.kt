@@ -242,7 +242,7 @@ class NX : MainAPI() {
 }
 @CloudstreamPlugin
 class NXPlugin : Plugin() {
-    override fun load(manager: ApiManager) {
-        manager.registerMainAPI(NX())
+    override fun load(manager: android.content.Context) {
+        registerMainAPI(NX())
     }
 }
