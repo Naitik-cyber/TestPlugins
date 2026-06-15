@@ -3,6 +3,8 @@ package com.cloudstream.nx
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 
 class NX : MainAPI() {
     override var mainUrl = "https://nxsha.space"
@@ -236,5 +238,11 @@ class NX : MainAPI() {
             e.printStackTrace()
         }
         return found
+    }
+}
+@CloudstreamPlugin
+class NXPlugin : Plugin() {
+    override fun load(manager: ApiManager) {
+        manager.registerMainAPI(NX())
     }
 }
