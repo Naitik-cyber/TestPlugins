@@ -7,9 +7,9 @@ import org.jsoup.nodes.Element
 class NX : MainAPI() {
     override var mainUrl = "https://nxsha.space"
     override var name = "NX"
-    override val lang = "en"
+    override var lang = "en"
     override val hasMainPage = true
-    override val hasSearch = true
+    
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
     // -------------------------------------------------------------------------
@@ -115,7 +115,7 @@ class NX : MainAPI() {
 
         return if (isTv) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf(
-                Episode("$embedData|1|1", "Episode 1", 1, 1)
+                newEpisode("$embedData|1|1") { this.name = "Episode 1"; this.season = 1; this.episode = 1 }
             )) {
                 this.posterUrl = poster
                 this.year = year
@@ -222,13 +222,11 @@ class NX : MainAPI() {
                 if (streamUrl.length > 20) {
                     val isM3u8 = streamUrl.contains(".m3u8", true) || streamUrl.contains(".txt", true)
                     callback(
-                        ExtractorLink(
-                            source = name,
-                            name = name,
-                            url = streamUrl,
-                            referer = embedUrl,
-                            quality = Qualities.Unknown.value,
-                            isM3u8 = isM3u8
+    newExtractorLink(name, name, streamUrl, if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+        this.referer = embedUrl
+        this.quality = Qualities.Unknown.value
+    }
+)
                         )
                     )
                     found = true
