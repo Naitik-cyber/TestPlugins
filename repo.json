@@ -1,0 +1,8 @@
+{
+    "name": "NX Repo",
+    "description": "NX Cloudstream Extension",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/Naitik-cyber/TestPlugins/builds/plugins.json"
+    ]
+}
