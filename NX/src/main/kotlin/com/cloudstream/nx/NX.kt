@@ -227,8 +227,8 @@ class NX : MainAPI() {
         this.quality = Qualities.Unknown.value
     }
 )
-                        )
-                    )
+                        
+                    
                     found = true
                 }
             }
