@@ -7,10 +7,49 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 
-// Replace with your TMDB API key
 const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
+
+// Data classes outside the main class so parsedSafe works correctly
+data class TMDBResponse(
+    val results: List<TMDBItem>? = null
+)
+
+data class TMDBItem(
+    val id: Int? = null,
+    val title: String? = null,
+    val name: String? = null,
+    val poster_path: String? = null,
+    val media_type: String? = null,
+    val release_date: String? = null,
+    val first_air_date: String? = null
+)
+
+data class TMDBDetail(
+    val id: Int? = null,
+    val title: String? = null,
+    val name: String? = null,
+    val overview: String? = null,
+    val poster_path: String? = null,
+    val backdrop_path: String? = null,
+    val release_date: String? = null,
+    val first_air_date: String? = null,
+    val seasons: List<TMDBSeason>? = null,
+    val imdb_id: String? = null
+)
+
+data class TMDBSeason(
+    val season_number: Int? = null,
+    val episodes: List<TMDBEpisode>? = null
+)
+
+data class TMDBEpisode(
+    val episode_number: Int? = null,
+    val name: String? = null,
+    val overview: String? = null,
+    val still_path: String? = null
+)
 
 class NX : MainAPI() {
     override var mainUrl = "https://nxsha.space"
@@ -28,7 +67,8 @@ class NX : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}&page=$page"
-        val response = app.get(url).parsedSafe<TMDBResponse>() ?: return newHomePageResponse(request.name, emptyList())
+        val response = app.get(url).parsedSafe<TMDBResponse>()
+            ?: return newHomePageResponse(request.name, emptyList())
         val items = response.results?.mapNotNull { it.toSearchResponse(this) } ?: emptyList()
         return newHomePageResponse(request.name, items)
     }
@@ -41,16 +81,18 @@ class NX : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val parts = url.split("|")
-        val tmdbId = parts[0]
-        val type = parts[1]
+        val tmdbId = parts.getOrNull(0) ?: return null
+        val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            val data = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=seasons").parsedSafe<TMDBDetail>() ?: return null
+            val data = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=seasons")
+                .parsedSafe<TMDBDetail>() ?: return null
             val episodes = mutableListOf<Episode>()
             data.seasons?.forEach { season ->
                 val seasonNum = season.season_number ?: return@forEach
                 if (seasonNum == 0) return@forEach
-                val seasonData = app.get("$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY").parsedSafe<TMDBSeason>()
+                val seasonData = app.get("$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY")
+                    .parsedSafe<TMDBSeason>()
                 seasonData?.episodes?.forEach { ep ->
                     episodes.add(newEpisode("$tmdbId|tv|$seasonNum|${ep.episode_number}") {
                         this.name = ep.name
@@ -61,15 +103,26 @@ class NX : MainAPI() {
                     })
                 }
             }
-            newTvSeriesLoadResponse(data.name ?: return null, url, TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(
+                data.name ?: return null,
+                url,
+                TvType.TvSeries,
+                episodes
+            ) {
                 this.posterUrl = data.poster_path?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = data.backdrop_path?.let { "$TMDB_IMAGE$it" }
                 this.plot = data.overview
                 this.year = data.first_air_date?.take(4)?.toIntOrNull()
             }
         } else {
-            val data = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY").parsedSafe<TMDBDetail>() ?: return null
-            newMovieLoadResponse(data.title ?: return null, url, TvType.Movie, "$tmdbId|movie") {
+            val data = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
+                .parsedSafe<TMDBDetail>() ?: return null
+            newMovieLoadResponse(
+                data.title ?: return null,
+                url,
+                TvType.Movie,
+                "$tmdbId|movie"
+            ) {
                 this.posterUrl = data.poster_path?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = data.backdrop_path?.let { "$TMDB_IMAGE$it" }
                 this.plot = data.overview
@@ -85,8 +138,8 @@ class NX : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val parts = data.split("|")
-        val tmdbId = parts[0]
-        val type = parts[1]
+        val tmdbId = parts.getOrNull(0) ?: return false
+        val type = parts.getOrNull(1) ?: "movie"
         val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
         val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
 
@@ -117,46 +170,38 @@ class NX : MainAPI() {
                 )
             ).text
 
-            Regex("""https?://[^\s"'<>\\]+\.(?:m3u8|mp4|txt)[^\s"'<>\\]*""", RegexOption.IGNORE_CASE)
-                .findAll(html)
-                .forEach { match ->
-                    val streamUrl = match.value.replace("\\u0026", "&").replace("\\/", "/").trim()
-                    if (streamUrl.length > 20) {
-                        val isM3u8 = streamUrl.contains(".m3u8", true) || streamUrl.contains(".txt", true)
-                        callback(
-                            newExtractorLink(
-                                source = name,
-                                name = name,
-                                url = streamUrl,
-                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            ) {
-                                this.referer = embedUrl
-                                this.quality = Qualities.Unknown.value
-                            }
-                        )
-                        found = true
-                    }
+            Regex(
+                """https?://[^\s"'<>\\]+\.(?:m3u8|mp4|txt)[^\s"'<>\\]*""",
+                RegexOption.IGNORE_CASE
+            ).findAll(html).forEach { match ->
+                val streamUrl = match.value
+                    .replace("\\u0026", "&")
+                    .replace("\\/", "/")
+                    .trim()
+                if (streamUrl.length > 20) {
+                    val isM3u8 = streamUrl.contains(".m3u8", true) || streamUrl.contains(".txt", true)
+                    callback(
+                        newExtractorLink(
+                            source = name,
+                            name = name,
+                            url = streamUrl,
+                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = embedUrl
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    found = true
                 }
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
         return found
     }
+}
 
-    // TMDB Data Classes
-   data class TMDBDetail(
-    val id: Int? = null,
-    val title: String? = null,
-    val name: String? = null,
-    val overview: String? = null,
-    val poster_path: String? = null,
-    val backdrop_path: String? = null,
-    val release_date: String? = null,
-    val first_air_date: String? = null,
-    val seasons: List<TMDBSeason>? = null,
-    val imdb_id: String? = null
-){
-       fun toSearchResponse(api: MainAPI): SearchResponse? {
+fun TMDBItem.toSearchResponse(api: MainAPI): SearchResponse? {
     val tmdbId = id ?: return null
     val type = if (media_type == "tv") "tv" else "movie"
     val displayTitle = title ?: name ?: return null
@@ -170,30 +215,6 @@ class NX : MainAPI() {
             this.posterUrl = poster
         }
     }
-}
-    }
-    data class TMDBDetail(
-        val id: Int?,
-        val title: String?,
-        val name: String?,
-        val overview: String?,
-        val poster_path: String?,
-        val backdrop_path: String?,
-        val release_date: String?,
-        val first_air_date: String?,
-        val seasons: List<TMDBSeason>?
-    )
-   data class TMDBSeason(
-    val season_number: Int? = null,
-    val episodes: List<TMDBEpisode>? = null
-)
-
-data class TMDBEpisode(
-    val episode_number: Int? = null,
-    val name: String? = null,
-    val overview: String? = null,
-    val still_path: String? = null
-)
 }
 
 @CloudstreamPlugin
