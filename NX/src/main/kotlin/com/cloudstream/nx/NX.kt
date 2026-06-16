@@ -29,14 +29,14 @@ class NX : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}&page=$page"
         val response = app.get(url).parsedSafe<TMDBResponse>() ?: return newHomePageResponse(request.name, emptyList())
-        val items = response.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        val items = response.results?.mapNotNull { it.toSearchResponse(this) } ?: emptyList()
         return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$TMDB_BASE/search/multi?api_key=$TMDB_API_KEY&query=${query.replace(" ", "+")}"
         val response = app.get(url).parsedSafe<TMDBResponse>() ?: return emptyList()
-        return response.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        return response.results?.mapNotNull { it.toSearchResponse(this) } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -154,24 +154,21 @@ class NX : MainAPI() {
         val release_date: String?,
         val first_air_date: String?
     ) {
-        fun toSearchResponse(): SearchResponse? {
-            val tmdbId = id ?: return null
-            val type = when (media_type) {
-                "tv" -> "tv"
-                else -> "movie"
-            }
-            val displayTitle = title ?: name ?: return null
-            val poster = poster_path?.let { "$TMDB_IMAGE$it" }
-            return if (type == "tv") {
-                newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries) {
-                    this.posterUrl = poster
-                }
-            } else {
-                newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie) {
-                    this.posterUrl = poster
-                }
-            }
+       fun toSearchResponse(api: MainAPI): SearchResponse? {
+    val tmdbId = id ?: return null
+    val type = if (media_type == "tv") "tv" else "movie"
+    val displayTitle = title ?: name ?: return null
+    val poster = poster_path?.let { "$TMDB_IMAGE$it" }
+    return if (type == "tv") {
+        api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries) {
+            this.posterUrl = poster
         }
+    } else {
+        api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie) {
+            this.posterUrl = poster
+        }
+    }
+}
     }
     data class TMDBDetail(
         val id: Int?,
