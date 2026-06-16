@@ -144,16 +144,18 @@ class NX : MainAPI() {
     }
 
     // TMDB Data Classes
-    data class TMDBResponse(val results: List<TMDBItem>?)
-    data class TMDBItem(
-        val id: Int?,
-        val title: String?,
-        val name: String?,
-        val poster_path: String?,
-        val media_type: String?,
-        val release_date: String?,
-        val first_air_date: String?
-    ) {
+   data class TMDBDetail(
+    val id: Int? = null,
+    val title: String? = null,
+    val name: String? = null,
+    val overview: String? = null,
+    val poster_path: String? = null,
+    val backdrop_path: String? = null,
+    val release_date: String? = null,
+    val first_air_date: String? = null,
+    val seasons: List<TMDBSeason>? = null,
+    val imdb_id: String? = null
+){
        fun toSearchResponse(api: MainAPI): SearchResponse? {
     val tmdbId = id ?: return null
     val type = if (media_type == "tv") "tv" else "movie"
@@ -181,16 +183,17 @@ class NX : MainAPI() {
         val first_air_date: String?,
         val seasons: List<TMDBSeason>?
     )
-    data class TMDBSeason(
-        val season_number: Int?,
-        val episodes: List<TMDBEpisode>?
-    )
-    data class TMDBEpisode(
-        val episode_number: Int?,
-        val name: String?,
-        val overview: String?,
-        val still_path: String?
-    )
+   data class TMDBSeason(
+    val season_number: Int? = null,
+    val episodes: List<TMDBEpisode>? = null
+)
+
+data class TMDBEpisode(
+    val episode_number: Int? = null,
+    val name: String? = null,
+    val overview: String? = null,
+    val still_path: String? = null
+)
 }
 
 @CloudstreamPlugin
