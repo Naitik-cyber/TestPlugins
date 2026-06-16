@@ -160,11 +160,11 @@ class NX : MainAPI() {
     val displayTitle = title ?: name ?: return null
     val poster = poster_path?.let { "$TMDB_IMAGE$it" }
     return if (type == "tv") {
-        api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries) {
+        api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries, false) {
             this.posterUrl = poster
         }
     } else {
-        api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie) {
+        api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie, false) {
             this.posterUrl = poster
         }
     }
