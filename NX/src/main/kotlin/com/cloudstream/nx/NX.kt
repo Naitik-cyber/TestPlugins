@@ -120,7 +120,6 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            // Append external_ids to reliably fetch the IMDb ID for TV series
             val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=external_ids")
             val data = rawResponse.parsedSafe<TMDBDetail>()
             
@@ -140,7 +139,6 @@ class NX : MainAPI() {
                 
                 seasonData?.episodes?.forEach { ep ->
                     val epNum = ep.episode_number ?: return@forEach
-                    // Pass the IMDb ID at the end of the metadata token string
                     episodes.add(
                         newEpisode("$tmdbId|tv|$seasonNum|$epNum|$imdbId") {
                             this.name = ep.name
@@ -211,7 +209,6 @@ class NX : MainAPI() {
             "Vnst-Prime", "Vnst-Gama", "Vnst-Sigma", "Vnst-Hexa", "Vnst-Catflix"
         )
 
-        // Try using IMDb ID first; fall back to TMDb ID if unavailable
         val preferredId = if (imdbId.isNotEmpty() && imdbId.startsWith("tt")) imdbId else tmdbId
 
         val baseUrls = if (type == "tv") {
@@ -229,7 +226,6 @@ class NX : MainAPI() {
         val results = targetServers.amap { serverName ->
             var localFound = false
             
-            // Loop through both ID types to ensure compatibility
             for (baseUrl in baseUrls) {
                 if (localFound) break
                 try {
@@ -240,24 +236,30 @@ class NX : MainAPI() {
                         targetUrl,
                         referer = mainUrl,
                         headers = mapOf(
-                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                            "Accept-Language" to "en-US,en;q=0.5"
                         )
                     ).text
 
-                    // Critical step: unescape JSON slashes so standard regex statements can read them
+                    if (rawHtml.contains("Cloudflare") || rawHtml.contains("Just a moment...")) {
+                        println("NX Debug: Server [$serverName] is blocked by Cloudflare.")
+                        continue 
+                    }
+
                     val html = rawHtml.replace("\\/", "/")
 
-                    // Strategy 1: Sub-Iframe Source Extraction
-                    val iframeRegex = """<iframe[^>]+src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
+                    val iframeRegex = """<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
                     iframeRegex.findAll(html).forEach { match ->
                         var iframeUrl = match.groupValues[1]
                         if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
                         if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
                         
+                        println("NX Debug: Found iframe -> $iframeUrl") 
+
                         if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
                             localFound = true
                         } else {
-                            // Fallback: If no system extractor handles the domain, scrape the target iframe directly
                             try {
                                 val subHtml = app.get(iframeUrl, referer = targetUrl).text.replace("\\/", "/")
                                 """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
@@ -275,11 +277,12 @@ class NX : MainAPI() {
                                         )
                                         localFound = true
                                     }
-                            } catch (inner: Exception) { }
+                            } catch (inner: Exception) { 
+                                println("NX Debug: Inner iframe extraction failed -> ${inner.message}")
+                            }
                         }
                     }
 
-                    // Strategy 2: Direct-To-Node Manifest Mapping Injection
                     val m3u8Regex = """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
                     m3u8Regex.findAll(html).forEach { match ->
                         callback(
@@ -296,7 +299,7 @@ class NX : MainAPI() {
                         localFound = true
                     }
                 } catch (e: Exception) {
-                    println("NX Production Engine: Node skipped [$serverName]: ${e.message}")
+                    println("NX Debug: Node skipped [$serverName]: ${e.message}")
                 }
             }
             localFound
