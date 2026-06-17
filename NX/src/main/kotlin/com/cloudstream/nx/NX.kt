@@ -5,17 +5,19 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import android.content.Context
 
-const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
+const val TMDB_API_KEY = "YOUR_TMDB_API_KEY_HERE"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 
-// Data classes outside the main class so parsedSafe works correctly
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBResponse(
     val results: List<TMDBItem>? = null
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBItem(
     val id: Int? = null,
     val title: String? = null,
@@ -26,6 +28,7 @@ data class TMDBItem(
     val first_air_date: String? = null
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBDetail(
     val id: Int? = null,
     val title: String? = null,
@@ -39,17 +42,35 @@ data class TMDBDetail(
     val imdb_id: String? = null
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBSeason(
     val season_number: Int? = null,
     val episodes: List<TMDBEpisode>? = null
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBEpisode(
     val episode_number: Int? = null,
     val name: String? = null,
     val overview: String? = null,
     val still_path: String? = null
 )
+
+fun TMDBItem.toSearchResponse(api: MainAPI): SearchResponse? {
+    val tmdbId = id ?: return null
+    val type = if (media_type == "tv") "tv" else "movie"
+    val displayTitle = title ?: name ?: return null
+    val poster = poster_path?.let { "$TMDB_IMAGE$it" }
+    return if (type == "tv") {
+        api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries, false) {
+            this.posterUrl = poster
+        }
+    } else {
+        api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie, false) {
+            this.posterUrl = poster
+        }
+    }
+}
 
 class NX : MainAPI() {
     override var mainUrl = "https://nxsha.space"
@@ -85,24 +106,31 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            val data = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=seasons")
-                .parseJson<TMDBDetail>(response.text) ?: return null
+            val data = app.get(
+                "$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=seasons"
+            ).parsedSafe<TMDBDetail>() ?: return null
+
             val episodes = mutableListOf<Episode>()
             data.seasons?.forEach { season ->
                 val seasonNum = season.season_number ?: return@forEach
                 if (seasonNum == 0) return@forEach
-                val seasonData = app.get("$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY")
-                    .parsedSafe<TMDBSeason>()
+                val seasonData = app.get(
+                    "$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY"
+                ).parsedSafe<TMDBSeason>()
                 seasonData?.episodes?.forEach { ep ->
-                    episodes.add(newEpisode("$tmdbId|tv|$seasonNum|${ep.episode_number}") {
-                        this.name = ep.name
-                        this.season = seasonNum
-                        this.episode = ep.episode_number
-                        this.posterUrl = ep.still_path?.let { "$TMDB_IMAGE$it" }
-                        this.description = ep.overview
-                    })
+                    val epNum = ep.episode_number ?: return@forEach
+                    episodes.add(
+                        newEpisode("$tmdbId|tv|$seasonNum|$epNum") {
+                            this.name = ep.name
+                            this.season = seasonNum
+                            this.episode = epNum
+                            this.posterUrl = ep.still_path?.let { "$TMDB_IMAGE$it" }
+                            this.description = ep.overview
+                        }
+                    )
                 }
             }
+
             newTvSeriesLoadResponse(
                 data.name ?: return null,
                 url,
@@ -115,8 +143,10 @@ class NX : MainAPI() {
                 this.year = data.first_air_date?.take(4)?.toIntOrNull()
             }
         } else {
-            val data = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
-                .parseJson<TMDBDetail>(response.text) ?: return null
+            val data = app.get(
+                "$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY"
+            ).parsedSafe<TMDBDetail>() ?: return null
+
             newMovieLoadResponse(
                 data.title ?: return null,
                 url,
@@ -179,7 +209,8 @@ class NX : MainAPI() {
                     .replace("\\/", "/")
                     .trim()
                 if (streamUrl.length > 20) {
-                    val isM3u8 = streamUrl.contains(".m3u8", true) || streamUrl.contains(".txt", true)
+                    val isM3u8 = streamUrl.contains(".m3u8", true) ||
+                            streamUrl.contains(".txt", true)
                     callback(
                         newExtractorLink(
                             source = name,
@@ -198,22 +229,6 @@ class NX : MainAPI() {
             e.printStackTrace()
         }
         return found
-    }
-}
-
-fun TMDBItem.toSearchResponse(api: MainAPI): SearchResponse? {
-    val tmdbId = id ?: return null
-    val type = if (media_type == "tv") "tv" else "movie"
-    val displayTitle = title ?: name ?: return null
-    val poster = poster_path?.let { "$TMDB_IMAGE$it" }
-    return if (type == "tv") {
-        api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries, false) {
-            this.posterUrl = poster
-        }
-    } else {
-        api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie, false) {
-            this.posterUrl = poster
-        }
     }
 }
 
