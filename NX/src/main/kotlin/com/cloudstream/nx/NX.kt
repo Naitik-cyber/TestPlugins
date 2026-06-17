@@ -30,6 +30,11 @@ data class TMDBItem(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
+data class ExternalIds(
+    @JsonProperty("imdb_id") val imdb_id: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBDetail(
     @JsonProperty("id") val id: Int? = null,
     @JsonProperty("title") val title: String? = null,
@@ -40,7 +45,8 @@ data class TMDBDetail(
     @JsonProperty("release_date") val release_date: String? = null,
     @JsonProperty("first_air_date") val first_air_date: String? = null,
     @JsonProperty("seasons") val seasons: List<TMDBSeason>? = null,
-    @JsonProperty("imdb_id") val imdb_id: String? = null
+    @JsonProperty("imdb_id") val imdb_id: String? = null,
+    @JsonProperty("external_ids") val external_ids: ExternalIds? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -114,7 +120,8 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY")
+            // Append external_ids to reliably fetch the IMDb ID for TV series
+            val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=external_ids")
             val data = rawResponse.parsedSafe<TMDBDetail>()
             
             if (data == null) {
@@ -122,6 +129,7 @@ class NX : MainAPI() {
                 return null
             }
 
+            val imdbId = data.external_ids?.imdb_id ?: data.imdb_id ?: ""
             val episodes = mutableListOf<Episode>()
             data.seasons?.forEach { season ->
                 val seasonNum = season.season_number ?: return@forEach
@@ -132,8 +140,9 @@ class NX : MainAPI() {
                 
                 seasonData?.episodes?.forEach { ep ->
                     val epNum = ep.episode_number ?: return@forEach
+                    // Pass the IMDb ID at the end of the metadata token string
                     episodes.add(
-                        newEpisode("$tmdbId|tv|$seasonNum|$epNum") {
+                        newEpisode("$tmdbId|tv|$seasonNum|$epNum|$imdbId") {
                             this.name = ep.name
                             this.season = seasonNum
                             this.episode = epNum
@@ -164,11 +173,12 @@ class NX : MainAPI() {
                 return null
             }
 
+            val imdbId = data.imdb_id ?: ""
             newMovieLoadResponse(
                 data.title ?: "Unknown Movie",
                 url,
                 TvType.Movie,
-                "$tmdbId|movie"
+                "$tmdbId|movie|1|1|$imdbId"
             ) {
                 this.posterUrl = data.poster_path?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = data.backdrop_path?.let { "$TMDB_IMAGE$it" }
@@ -189,12 +199,7 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
         val season = parts.getOrNull(2) ?: "1"
         val episode = parts.getOrNull(3) ?: "1"
-
-        val baseUrl = if (type == "tv") {
-            "$mainUrl/embed/tv/$tmdbId/$season/$episode" 
-        } else {
-            "$mainUrl/embed/movie/$tmdbId"
-        }
+        val imdbId = parts.getOrNull(4) ?: ""
 
         val targetServers = listOf(
             "MbPly-[Multi-Lang]", "ZetPly-[Multi-Lang]", "OrVid-[Multi-Lang]", 
@@ -206,55 +211,98 @@ class NX : MainAPI() {
             "Vnst-Prime", "Vnst-Gama", "Vnst-Sigma", "Vnst-Hexa", "Vnst-Catflix"
         )
 
-        var linkFound = false
+        // Try using IMDb ID first; fall back to TMDb ID if unavailable
+        val preferredId = if (imdbId.isNotEmpty() && imdbId.startsWith("tt")) imdbId else tmdbId
 
-        // amap is CloudStream's suspend-safe parallel iterator.
-        targetServers.amap { serverName ->
-            try {
-                val targetUrl = "$baseUrl?server=$serverName&one_server=true&lang=en"
-                
-                val html = app.get(
-                    targetUrl,
-                    referer = mainUrl,
-                    headers = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                    )
-                ).text
-
-                // Strategy 1: Sub-Iframe Source Redirection Extraction
-                val iframeRegex = """<iframe[^>]+src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
-                iframeRegex.findAll(html).forEach { match ->
-                    var iframeUrl = match.groupValues[1]
-                    if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
-                    if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
-                    
-                    if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
-                        linkFound = true
-                    }
-                }
-
-                // Strategy 2: Direct-To-Node Manifest Mapping Injection
-                val m3u8Regex = """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
-                m3u8Regex.findAll(html).forEach { match ->
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name = "NX $serverName",
-                            url = match.value.trim(),
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = targetUrl
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    linkFound = true
-                }
-            } catch (e: Exception) {
-                println("NX Production Engine: Node skipped [$serverName]: ${e.message}")
-            }
+        val baseUrls = if (type == "tv") {
+            listOf(
+                "$mainUrl/embed/tv/$preferredId/$season/$episode",
+                "$mainUrl/embed/tv/$tmdbId/$season/$episode"
+            )
+        } else {
+            listOf(
+                "$mainUrl/embed/movie/$preferredId",
+                "$mainUrl/embed/movie/$tmdbId"
+            )
         }
 
-        return linkFound
+        val results = targetServers.amap { serverName ->
+            var localFound = false
+            
+            // Loop through both ID types to ensure compatibility
+            for (baseUrl in baseUrls) {
+                if (localFound) break
+                try {
+                    val encodedServer = java.net.URLEncoder.encode(serverName, "UTF-8")
+                    val targetUrl = "$baseUrl?server=$encodedServer&one_server=true&lang=en"
+                    
+                    val rawHtml = app.get(
+                        targetUrl,
+                        referer = mainUrl,
+                        headers = mapOf(
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                        )
+                    ).text
+
+                    // Critical step: unescape JSON slashes so standard regex statements can read them
+                    val html = rawHtml.replace("\\/", "/")
+
+                    // Strategy 1: Sub-Iframe Source Extraction
+                    val iframeRegex = """<iframe[^>]+src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
+                    iframeRegex.findAll(html).forEach { match ->
+                        var iframeUrl = match.groupValues[1]
+                        if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
+                        if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
+                        
+                        if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
+                            localFound = true
+                        } else {
+                            // Fallback: If no system extractor handles the domain, scrape the target iframe directly
+                            try {
+                                val subHtml = app.get(iframeUrl, referer = targetUrl).text.replace("\\/", "/")
+                                """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
+                                    .findAll(subHtml).forEach { subMatch ->
+                                        callback(
+                                            newExtractorLink(
+                                                source = name,
+                                                name = "NX $serverName (Direct)",
+                                                url = subMatch.value.trim(),
+                                                type = ExtractorLinkType.M3U8
+                                            ) {
+                                                this.referer = iframeUrl
+                                                this.quality = Qualities.Unknown.value
+                                            }
+                                        )
+                                        localFound = true
+                                    }
+                            } catch (inner: Exception) { }
+                        }
+                    }
+
+                    // Strategy 2: Direct-To-Node Manifest Mapping Injection
+                    val m3u8Regex = """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
+                    m3u8Regex.findAll(html).forEach { match ->
+                        callback(
+                            newExtractorLink(
+                                source = name,
+                                name = "NX $serverName",
+                                url = match.value.trim(),
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = targetUrl
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        localFound = true
+                    }
+                } catch (e: Exception) {
+                    println("NX Production Engine: Node skipped [$serverName]: ${e.message}")
+                }
+            }
+            localFound
+        }
+
+        return results.any { it }
     }
 }
 
