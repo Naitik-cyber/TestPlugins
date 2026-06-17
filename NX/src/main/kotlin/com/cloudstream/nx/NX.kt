@@ -199,69 +199,121 @@ class NX : MainAPI() {
         return extractFromEmbed(embedUrl, subtitleCallback, callback)
     }
 
-    private suspend fun extractFromEmbed(
-        embedUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        var found = false
-        try {
-            if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) return true
+   private suspend fun extractFromEmbed(
+    embedUrl: String,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    var found = false
+    try {
+        // Strategy 1: Check if an existing CloudStream extractor can handle this domain natively
+        if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) return true
 
-            val rawHtml = app.get(
-                embedUrl,
-                referer = mainUrl,
-                headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Origin" to mainUrl,
-                    "Accept" to "*/*"
-                )
-            ).text
+        // Fetch the raw embed document with full desktop-browser simulation headers
+        val rawHtml = app.get(
+            embedUrl,
+            referer = mainUrl,
+            headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Origin" to mainUrl,
+                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language" to "en-US,en;q=0.5"
+            )
+        ).text
 
-            val cleanHtml = rawHtml
-                .replace("\\/", "/")
-                .replace("\\u0026", "&")
+        // Clean up escaped backslashes and unicode expressions
+        val cleanHtml = rawHtml
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
 
-            if (!cleanHtml.contains("mountainviewfinance") && !cleanHtml.contains(".m3u8")) {
-                println("NX Embed Content Debug: $cleanHtml")
+        val streamUrls = mutableSetOf<String>()
+
+        // Strategy 2: Extract standard absolute URLs
+        val standardRegex = """https?://[^\s"'<>\\]+\.(?:m3u8|mp4|txt|woff2)[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
+        standardRegex.findAll(cleanHtml).forEach { streamUrls.add(it.value.trim()) }
+
+        // Strategy 3: Catch protocol-relative tracks (e.g., //syd.mountainviewfinance.cfd/file.txt)
+        val protocolRelativeRegex = """//[^\s"'<>\\]+\.(?:m3u8|mp4|txt|woff2)[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
+        protocolRelativeRegex.findAll(cleanHtml).forEach { match ->
+            streamUrls.add("https:${match.value.trim()}")
+        }
+
+        // Strategy 4: Fallback search targeting the CDN path signature directly
+        if (cleanHtml.contains("mountainviewfinance.cfd")) {
+            val cdnRegex = """(?:https?:)?//syd\.mountainviewfinance\.cfd/[^\s"'>\\]+""".toRegex(RegexOption.IGNORE_CASE)
+            cdnRegex.findAll(cleanHtml).forEach { match ->
+                var url = match.value.trim()
+                if (url.startsWith("//")) url = "https:$url"
+                streamUrls.add(url)
             }
+        }
 
-            val videoRegex = """https?://[^\s"'<>\\]+\.(?:m3u8|mp4|txt)[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
-            val cdnRegex = """https?://syd\.mountainviewfinance\.cfd/[^\s"'>\\]+""".toRegex(RegexOption.IGNORE_CASE)
+        // Strategy 5: Deep-scan and decode Base64 hidden payload tokens
+        val base64Regex = """["']([A-Za-z0-9+/]{30,}=*)["']""".toRegex()
+        base64Regex.findAll(cleanHtml).forEach { match ->
+            try {
+                val decoded = android.util.Base64.decode(match.groupValues[1], android.util.Base64.DEFAULT).toString(Charsets.UTF_8)
+                if (decoded.contains("mountainviewfinance") || decoded.contains(".m3u8") || decoded.contains(".txt")) {
+                    standardRegex.findAll(decoded).forEach { streamUrls.add(it.value.trim()) }
+                    protocolRelativeRegex.findAll(decoded).forEach { m -> streamUrls.add("https:${m.value.trim()}") }
+                }
+            } catch (_: Exception) {}
+        }
 
-            val allMatches = (videoRegex.findAll(cleanHtml) + cdnRegex.findAll(cleanHtml))
-                .map { it.value.trim() }
-                .distinct()
-
-            allMatches.forEach { streamUrl ->
-                if (streamUrl.length > 20) {
-                    val isM3u8 = streamUrl.contains(".m3u8", true) || 
-                                 streamUrl.contains(".txt", true) || 
-                                 streamUrl.contains("cf-master", true)
-
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name = "NXSHA CDN Mirror",
-                            url = streamUrl,
-                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.referer = "https://nxsha.space/"
-                            this.quality = Qualities.Unknown.value
-                            this.headers = mapOf(
-                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                                "Origin" to mainUrl
-                            )
-                        }
-                    )
+        // Strategy 6: Locate and follow nested sub-iframes if wrapped
+        val iframeRegex = """<iframe[^>]+src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
+        iframeRegex.findAll(cleanHtml).forEach { match ->
+            val iframeUrl = match.groupValues[1]
+            val absoluteIframeUrl = when {
+                iframeUrl.startsWith("//") -> "https:$iframeUrl"
+                iframeUrl.startsWith("/") -> "$mainUrl$iframeUrl"
+                else -> iframeUrl
+            }
+            if (absoluteIframeUrl != embedUrl) {
+                if (loadExtractor(absoluteIframeUrl, embedUrl, subtitleCallback, callback)) {
                     found = true
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
-        return found
+
+        // Build stream items from all matched targets
+        streamUrls.distinct().forEach { streamUrl ->
+            if (streamUrl.length > 20) {
+                val isM3u8 = streamUrl.contains(".m3u8", true) || 
+                             streamUrl.contains(".txt", true) || 
+                             streamUrl.contains(".woff2", true) ||
+                             streamUrl.contains("cf-master", true)
+
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = "NXSHA CDN Mirror",
+                        url = streamUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = "$mainUrl/"
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                            "Origin" to mainUrl,
+                            "Referer" to embedUrl
+                        )
+                    }
+                )
+                found = true
+            }
+        }
+
+        if (!found) {
+            println("NX Scraper Alert: Page HTML parsed successfully, but no streams matched strategies. Length: ${cleanHtml.length}")
+        }
+
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
+    return found
+}
 }
 
 @CloudstreamPlugin
