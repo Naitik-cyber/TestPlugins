@@ -5,19 +5,20 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+
 import android.content.Context
 
 const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 
-@JsonIgnoreProperties(ignoreUnknown = true)
+
+
 data class TMDBResponse(
     val results: List<TMDBItem>? = null
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
+
 data class TMDBItem(
     val id: Int? = null,
     val title: String? = null,
@@ -28,7 +29,7 @@ data class TMDBItem(
     val first_air_date: String? = null
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
+
 data class TMDBDetail(
     val id: Int? = null,
     val title: String? = null,
@@ -42,13 +43,14 @@ data class TMDBDetail(
     val imdb_id: String? = null
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
+
 data class TMDBSeason(
     val season_number: Int? = null,
     val episodes: List<TMDBEpisode>? = null
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
+
+
 data class TMDBEpisode(
     val episode_number: Int? = null,
     val name: String? = null,
