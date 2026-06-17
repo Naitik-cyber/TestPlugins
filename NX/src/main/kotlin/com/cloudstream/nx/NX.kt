@@ -5,57 +5,56 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import android.content.Context
 
 const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 
-
-
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBResponse(
-    val results: List<TMDBItem>? = null
+    @JsonProperty("results") val results: List<TMDBItem>? = null
 )
 
-
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBItem(
-    val id: Int? = null,
-    val title: String? = null,
-    val name: String? = null,
-    val poster_path: String? = null,
-    val media_type: String? = null,
-    val release_date: String? = null,
-    val first_air_date: String? = null
+    @JsonProperty("id") val id: Int? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("poster_path") val poster_path: String? = null,
+    @JsonProperty("media_type") val media_type: String? = null,
+    @JsonProperty("release_date") val release_date: String? = null,
+    @JsonProperty("first_air_date") val first_air_date: String? = null
 )
 
-
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBDetail(
-    val id: Int? = null,
-    val title: String? = null,
-    val name: String? = null,
-    val overview: String? = null,
-    val poster_path: String? = null,
-    val backdrop_path: String? = null,
-    val release_date: String? = null,
-    val first_air_date: String? = null,
-    val seasons: List<TMDBSeason>? = null,
-    val imdb_id: String? = null
+    @JsonProperty("id") val id: Int? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("overview") val overview: String? = null,
+    @JsonProperty("poster_path") val poster_path: String? = null,
+    @JsonProperty("backdrop_path") val backdrop_path: String? = null,
+    @JsonProperty("release_date") val release_date: String? = null,
+    @JsonProperty("first_air_date") val first_air_date: String? = null,
+    @JsonProperty("seasons") val seasons: List<TMDBSeason>? = null,
+    @JsonProperty("imdb_id") val imdb_id: String? = null
 )
 
-
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBSeason(
-    val season_number: Int? = null,
-    val episodes: List<TMDBEpisode>? = null
+    @JsonProperty("season_number") val season_number: Int? = null,
+    @JsonProperty("episodes") val episodes: List<TMDBEpisode>? = null
 )
 
-
-
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBEpisode(
-    val episode_number: Int? = null,
-    val name: String? = null,
-    val overview: String? = null,
-    val still_path: String? = null
+    @JsonProperty("episode_number") val episode_number: Int? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("overview") val overview: String? = null,
+    @JsonProperty("still_path") val still_path: String? = null
 )
 
 fun TMDBItem.toSearchResponse(api: MainAPI): SearchResponse? {
@@ -108,9 +107,15 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            val data = app.get(
-                "$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=seasons"
-            ).parsedSafe<TMDBDetail>() ?: return null
+            // Cleaned URL: Removed the invalid append_to_response=seasons parameter
+            val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY")
+            val data = rawResponse.parsedSafe<TMDBDetail>()
+            
+            if (data == null) {
+                // If parsing fails, this logs the raw string response to Logcat for precise debugging
+                println("NX Plugin Error: Failed parsing TV Details. Raw payload: ${rawResponse.text}")
+                return null
+            }
 
             val episodes = mutableListOf<Episode>()
             data.seasons?.forEach { season ->
@@ -119,6 +124,7 @@ class NX : MainAPI() {
                 val seasonData = app.get(
                     "$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY"
                 ).parsedSafe<TMDBSeason>()
+                
                 seasonData?.episodes?.forEach { ep ->
                     val epNum = ep.episode_number ?: return@forEach
                     episodes.add(
@@ -134,7 +140,7 @@ class NX : MainAPI() {
             }
 
             newTvSeriesLoadResponse(
-                data.name ?: return null,
+                data.name ?: "Unknown TV Show",
                 url,
                 TvType.TvSeries,
                 episodes
@@ -145,12 +151,16 @@ class NX : MainAPI() {
                 this.year = data.first_air_date?.take(4)?.toIntOrNull()
             }
         } else {
-            val data = app.get(
-                "$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY"
-            ).parsedSafe<TMDBDetail>() ?: return null
+            val rawResponse = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
+            val data = rawResponse.parsedSafe<TMDBDetail>()
+            
+            if (data == null) {
+                println("NX Plugin Error: Failed parsing Movie Details. Raw payload: ${rawResponse.text}")
+                return null
+            }
 
             newMovieLoadResponse(
-                data.title ?: return null,
+                data.title ?: "Unknown Movie",
                 url,
                 TvType.Movie,
                 "$tmdbId|movie"
