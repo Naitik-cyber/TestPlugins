@@ -57,9 +57,9 @@ data class TMDBEpisode(
     @JsonProperty("still_path") val still_path: String? = null
 )
 
-fun TMDBItem.toSearchResponse(api: MainAPI): SearchResponse? {
+fun TMDBItem.toSearchResponse(api: MainAPI, forcedType: String? = null): SearchResponse? {
     val tmdbId = id ?: return null
-    val type = if (media_type == "tv") "tv" else "movie"
+    val type = forcedType ?: if (media_type == "tv") "tv" else "movie"
     val displayTitle = title ?: name ?: return null
     val poster = poster_path?.let { "$TMDB_IMAGE$it" }
     return if (type == "tv") {
@@ -91,7 +91,14 @@ class NX : MainAPI() {
         val url = "${request.data}&page=$page"
         val response = app.get(url).parsedSafe<TMDBResponse>()
             ?: return newHomePageResponse(request.name, emptyList())
-        val items = response.results?.mapNotNull { it.toSearchResponse(this) } ?: emptyList()
+        
+        val forcedType = when {
+            request.data.contains("/tv/") -> "tv"
+            request.data.contains("/movie/") -> "movie"
+            else -> null
+        }
+        
+        val items = response.results?.mapNotNull { it.toSearchResponse(this, forcedType) } ?: emptyList()
         return newHomePageResponse(request.name, items)
     }
 
@@ -107,12 +114,10 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            // Cleaned URL: Removed the invalid append_to_response=seasons parameter
             val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY")
             val data = rawResponse.parsedSafe<TMDBDetail>()
             
             if (data == null) {
-                // If parsing fails, this logs the raw string response to Logcat for precise debugging
                 println("NX Plugin Error: Failed parsing TV Details. Raw payload: ${rawResponse.text}")
                 return null
             }
@@ -203,35 +208,50 @@ class NX : MainAPI() {
         try {
             if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) return true
 
-            val html = app.get(
+            val rawHtml = app.get(
                 embedUrl,
                 referer = mainUrl,
                 headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Origin" to mainUrl
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Origin" to mainUrl,
+                    "Accept" to "*/*"
                 )
             ).text
 
-            Regex(
-                """https?://[^\s"'<>\\]+\.(?:m3u8|mp4|txt)[^\s"'<>\\]*""",
-                RegexOption.IGNORE_CASE
-            ).findAll(html).forEach { match ->
-                val streamUrl = match.value
-                    .replace("\\u0026", "&")
-                    .replace("\\/", "/")
-                    .trim()
+            val cleanHtml = rawHtml
+                .replace("\\/", "/")
+                .replace("\\u0026", "&")
+
+            if (!cleanHtml.contains("mountainviewfinance") && !cleanHtml.contains(".m3u8")) {
+                println("NX Embed Content Debug: $cleanHtml")
+            }
+
+            val videoRegex = """https?://[^\s"'<>\\]+\.(?:m3u8|mp4|txt)[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
+            val cdnRegex = """https?://syd\.mountainviewfinance\.cfd/[^\s"'>\\]+""".toRegex(RegexOption.IGNORE_CASE)
+
+            val allMatches = (videoRegex.findAll(cleanHtml) + cdnRegex.findAll(cleanHtml))
+                .map { it.value.trim() }
+                .distinct()
+
+            allMatches.forEach { streamUrl ->
                 if (streamUrl.length > 20) {
-                    val isM3u8 = streamUrl.contains(".m3u8", true) ||
-                            streamUrl.contains(".txt", true)
+                    val isM3u8 = streamUrl.contains(".m3u8", true) || 
+                                 streamUrl.contains(".txt", true) || 
+                                 streamUrl.contains("cf-master", true)
+
                     callback(
                         newExtractorLink(
                             source = name,
-                            name = name,
+                            name = "NXSHA CDN Mirror",
                             url = streamUrl,
                             type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) {
-                            this.referer = embedUrl
+                            this.referer = "https://nxsha.space/"
                             this.quality = Qualities.Unknown.value
+                            this.headers = mapOf(
+                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                                "Origin" to mainUrl
+                            )
                         }
                     )
                     found = true
