@@ -8,10 +8,6 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import android.content.Context
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withTimeoutOrNull
 
 const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
@@ -200,7 +196,6 @@ class NX : MainAPI() {
             "$mainUrl/embed/movie/$tmdbId"
         }
 
-        // Full 34-server roster sourced from system architecture documentation
         val targetServers = listOf(
             "MbPly-[Multi-Lang]", "ZetPly-[Multi-Lang]", "OrVid-[Multi-Lang]", 
             "QsPly-[Multi-Lang]", "Xuhd-[Multi-Lang]", "Ophm", 
@@ -213,58 +208,50 @@ class NX : MainAPI() {
 
         var linkFound = false
 
-        // PRO UPGRADE: Structured coroutine concurrency for lightning-fast parallel scraping
-        coroutineScope {
-            val tasks = targetServers.map { serverName ->
-                async {
-                    try {
-                        // Strict 6-second timeout configuration per node to stop dead links from freezing execution
-                        withTimeoutOrNull(6000) {
-                            val targetUrl = "$baseUrl?server=$serverName&one_server=true&lang=en"
-                            
-                            val html = app.get(
-                                targetUrl,
-                                referer = mainUrl,
-                                headers = mapOf(
-                                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                                )
-                            ).text
+        // Built-in CloudStream wrapper maps concurrently without external coroutine imports
+        targetServers.apmap { serverName ->
+            try {
+                val targetUrl = "$baseUrl?server=$serverName&one_server=true&lang=en"
+                
+                val html = app.get(
+                    targetUrl,
+                    referer = mainUrl,
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    )
+                ).text
 
-                            // Strategy 1: Sub-Iframe Source Redirection Extraction
-                            val iframeRegex = """<iframe[^>]+src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
-                            iframeRegex.findAll(html).forEach { match ->
-                                var iframeUrl = match.groupValues[1]
-                                if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
-                                if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
-                                
-                                if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
-                                    linkFound = true
-                                }
-                            }
-
-                            // Strategy 2: Direct-To-Node Manifest Mapping Injection
-                            val m3u8Regex = """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
-                            m3u8Regex.findAll(html).forEach { match ->
-                                callback(
-                                    newExtractorLink(
-                                        source = name,
-                                        name = "NX $serverName",
-                                        url = match.value.trim(),
-                                        referer = targetUrl,
-                                        quality = Qualities.Unknown.value,
-                                        type = ExtractorLinkType.M3U8
-                                    )
-                                )
-                                linkFound = true
-                            }
-                        }
-                    } catch (e: Exception) {
-                        // Silent catch guarantees failed or dead threads don't interrupt active nodes
-                        println("NX Production Engine: Node isolated [$serverName]: ${e.message}")
+                // Strategy 1: Sub-Iframe Source Redirection Extraction
+                val iframeRegex = """<iframe[^>]+src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
+                iframeRegex.findAll(html).forEach { match ->
+                    var iframeUrl = match.groupValues[1]
+                    if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
+                    if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
+                    
+                    if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
+                        linkFound = true
                     }
                 }
+
+                // Strategy 2: Direct-To-Node Manifest Mapping Injection
+                val m3u8Regex = """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
+                m3u8Regex.findAll(html).forEach { match ->
+                    callback(
+                        newExtractorLink(
+                            source = name,
+                            name = "NX $serverName",
+                            url = match.value.trim(),
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = targetUrl
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    linkFound = true
+                }
+            } catch (e: Exception) {
+                println("NX Production Engine: Node skipped [$serverName]: ${e.message}")
             }
-            tasks.awaitAll() // Resolves all parallel streams simultaneously 
         }
 
         return linkFound
