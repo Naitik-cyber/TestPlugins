@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 
-const val TMDB_API_KEY = "YOUR_TMDB_API_KEY_HERE"
+const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 
