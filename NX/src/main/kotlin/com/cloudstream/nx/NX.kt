@@ -208,8 +208,8 @@ class NX : MainAPI() {
 
         var linkFound = false
 
-        // Built-in CloudStream wrapper maps concurrently without external coroutine imports
-        targetServers.apmap { serverName ->
+        // amap is CloudStream's suspend-safe parallel iterator.
+        targetServers.amap { serverName ->
             try {
                 val targetUrl = "$baseUrl?server=$serverName&one_server=true&lang=en"
                 
