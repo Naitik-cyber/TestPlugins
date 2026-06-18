@@ -102,8 +102,8 @@ class NX : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val fixedQuery = query.replace(" ", "+")
-        val response = app.get("$TMDB_BASE/search/multi?api_key=$TMDB_API_KEY&query=$fixedQuery")
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val response = app.get("$TMDB_BASE/search/multi?api_key=$TMDB_API_KEY&query=$encodedQuery")
             .parsedSafe<TMDBResponse>() ?: return emptyList()
 
         return response.results?.mapNotNull {
@@ -175,52 +175,32 @@ class NX : MainAPI() {
         val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
         val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
 
-        val servers = listOf(
-            "MbPly-[Multi-Lang]",
-            "ZetPly-[Multi-Lang]",
-            "OrVid-[Multi-Lang]",
-            "QsPly-[Multi-Lang]",
-            "Xuhd-[Multi-Lang]",
-            "Ophm",
-            "Multi-Kil-[Multi-Lang]",
-            "Omen",
-            "YFLIX",
-            "Neon",
-            "Cypher",
-            "Breach",
-            "Vyse",
-            "Fade",
-            "Raze",
-            "River",
-            "VidLnx",
-            "RPM",
-            "MU4",
-            "Rive-Ophim",
-            "Gbru",
-            "Hindisk"
-        )
-
-        val baseEmbed = if (type == "tv") {
-            "$mainUrl/embed/tv/$tmdbId/$season/$episode"
+        val urls = if (type == "tv") {
+            listOf(
+                "https://vidsrc.xyz/embed/tv/$tmdbId/$season/$episode",
+                "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode",
+                "https://vidsrc.me/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode"
+            )
         } else {
-            "$mainUrl/embed/movie/$tmdbId"
+            listOf(
+                "https://vidsrc.xyz/embed/movie/$tmdbId",
+                "https://vidsrc.to/embed/movie/$tmdbId",
+                "https://vidsrc.me/embed/movie?tmdb=$tmdbId"
+            )
         }
 
         var found = false
 
-        for (server in servers) {
-            val encodedServer = URLEncoder.encode(server, "UTF-8")
-            val embedUrl = "$baseEmbed?server=$encodedServer&one_server=true"
-
+        for (url in urls) {
             try {
-                println("NX: Trying official embed $embedUrl")
+                println("NX: Trying extractor $url")
 
-                if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) {
+                if (loadExtractor(url, mainUrl, subtitleCallback, callback)) {
                     found = true
-                    println("NX: Found links from $server")
+                    println("NX: Found links from $url")
                 }
             } catch (e: Exception) {
-                println("NX: Failed $server - ${e.message}")
+                println("NX: Failed $url - ${e.message}")
             }
         }
 
