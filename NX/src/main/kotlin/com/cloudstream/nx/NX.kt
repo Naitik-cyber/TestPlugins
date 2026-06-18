@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
+import java.net.URLEncoder
 
 const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
@@ -60,11 +61,11 @@ fun TMDBItem.toSearchResponse(api: MainAPI, forcedType: String? = null): SearchR
 
     return if (type == "tv") {
         api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries, false) {
-            posterUrl = poster
+            this.posterUrl = poster
         }
     } else {
         api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie, false) {
-            posterUrl = poster
+            this.posterUrl = poster
         }
     }
 }
@@ -121,8 +122,8 @@ class NX : MainAPI() {
 
             val episodes = mutableListOf<Episode>()
 
-            data.seasons?.forEach { season ->
-                val seasonNum = season.seasonNumber ?: return@forEach
+            data.seasons?.forEach { seasonItem ->
+                val seasonNum = seasonItem.seasonNumber ?: return@forEach
                 if (seasonNum == 0) return@forEach
 
                 val seasonData = app.get("$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY")
@@ -133,31 +134,31 @@ class NX : MainAPI() {
 
                     episodes.add(
                         newEpisode("$tmdbId|tv|$seasonNum|$epNum") {
-                            name = ep.name
-                            season = seasonNum
-                            episode = epNum
-                            posterUrl = ep.stillPath?.let { "$TMDB_IMAGE$it" }
-                            description = ep.overview
+                            this.name = ep.name
+                            this.season = seasonNum
+                            this.episode = epNum
+                            this.posterUrl = ep.stillPath?.let { "$TMDB_IMAGE$it" }
+                            this.description = ep.overview
                         }
                     )
                 }
             }
 
             newTvSeriesLoadResponse(data.name ?: "Unknown", url, TvType.TvSeries, episodes) {
-                posterUrl = data.posterPath?.let { "$TMDB_IMAGE$it" }
-                backgroundPosterUrl = data.backdropPath?.let { "$TMDB_IMAGE$it" }
-                plot = data.overview
-                year = data.firstAirDate?.take(4)?.toIntOrNull()
+                this.posterUrl = data.posterPath?.let { "$TMDB_IMAGE$it" }
+                this.backgroundPosterUrl = data.backdropPath?.let { "$TMDB_IMAGE$it" }
+                this.plot = data.overview
+                this.year = data.firstAirDate?.take(4)?.toIntOrNull()
             }
         } else {
             val data = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
                 .parsedSafe<TMDBDetail>() ?: return null
 
             newMovieLoadResponse(data.title ?: "Unknown", url, TvType.Movie, "$tmdbId|movie|1|1") {
-                posterUrl = data.posterPath?.let { "$TMDB_IMAGE$it" }
-                backgroundPosterUrl = data.backdropPath?.let { "$TMDB_IMAGE$it" }
-                plot = data.overview
-                year = data.releaseDate?.take(4)?.toIntOrNull()
+                this.posterUrl = data.posterPath?.let { "$TMDB_IMAGE$it" }
+                this.backgroundPosterUrl = data.backdropPath?.let { "$TMDB_IMAGE$it" }
+                this.plot = data.overview
+                this.year = data.releaseDate?.take(4)?.toIntOrNull()
             }
         }
     }
@@ -174,32 +175,52 @@ class NX : MainAPI() {
         val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
         val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
 
-        val embedUrls = if (type == "tv") {
-            listOf(
-                "https://vidsrc.xyz/embed/tv/$tmdbId/$season/$episode",
-                "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode",
-                "https://vidsrc.me/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode"
-            )
+        val servers = listOf(
+            "MbPly-[Multi-Lang]",
+            "ZetPly-[Multi-Lang]",
+            "OrVid-[Multi-Lang]",
+            "QsPly-[Multi-Lang]",
+            "Xuhd-[Multi-Lang]",
+            "Ophm",
+            "Multi-Kil-[Multi-Lang]",
+            "Omen",
+            "YFLIX",
+            "Neon",
+            "Cypher",
+            "Breach",
+            "Vyse",
+            "Fade",
+            "Raze",
+            "River",
+            "VidLnx",
+            "RPM",
+            "MU4",
+            "Rive-Ophim",
+            "Gbru",
+            "Hindisk"
+        )
+
+        val baseEmbed = if (type == "tv") {
+            "$mainUrl/embed/tv/$tmdbId/$season/$episode"
         } else {
-            listOf(
-                "https://vidsrc.xyz/embed/movie/$tmdbId",
-                "https://vidsrc.to/embed/movie/$tmdbId",
-                "https://vidsrc.me/embed/movie?tmdb=$tmdbId"
-            )
+            "$mainUrl/embed/movie/$tmdbId"
         }
 
         var found = false
 
-        embedUrls.apmap { embedUrl ->
+        for (server in servers) {
+            val encodedServer = URLEncoder.encode(server, "UTF-8")
+            val embedUrl = "$baseEmbed?server=$encodedServer&one_server=true"
+
             try {
-                println("NX: Trying $embedUrl")
+                println("NX: Trying official embed $embedUrl")
 
                 if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) {
                     found = true
-                    println("NX: Found links from $embedUrl")
+                    println("NX: Found links from $server")
                 }
             } catch (e: Exception) {
-                println("NX: Failed $embedUrl - ${e.message}")
+                println("NX: Failed $server - ${e.message}")
             }
         }
 
