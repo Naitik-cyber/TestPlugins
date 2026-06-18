@@ -138,51 +138,68 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            // FIX 1: parsedSafe<TMDBDetail> now works because TMDBSeason no longer
-            // expects an `episodes` field that TMDB doesn't send here.
-            val data = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY")
-                .parsedSafe<TMDBDetail>() ?: return null
+            val raw = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY").text
+            val data = try { JSONObject(raw) } catch (_: Exception) { return null }
+
+            val showName = data.optString("name").takeIf { it.isNotBlank() } ?: "Unknown"
+            val overview = data.optString("overview")
+            val posterPath = data.optString("poster_path")
+            val backdropPath = data.optString("backdrop_path")
+            val year = data.optString("first_air_date").take(4).toIntOrNull()
 
             val episodes = mutableListOf<Episode>()
+            val seasons = data.optJSONArray("seasons") ?: JSONArray()
 
-            data.seasons?.forEach { seasonItem ->
-                val seasonNum = seasonItem.seasonNumber ?: return@forEach
-                if (seasonNum == 0) return@forEach
+            for (i in 0 until seasons.length()) {
+                val seasonObj = seasons.optJSONObject(i) ?: continue
+                val seasonNum = seasonObj.optInt("season_number", -1)
+                if (seasonNum <= 0) continue
 
-                // FIX 1 (cont): Use TMDBSeasonDetail for the per-season fetch
-                val seasonData = app.get("$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY")
-                    .parsedSafe<TMDBSeasonDetail>()
+                val seasonRaw = app.get(
+                    "$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY"
+                ).text
+                val seasonData = try { JSONObject(seasonRaw) } catch (_: Exception) { continue }
+                val epArray = seasonData.optJSONArray("episodes") ?: continue
 
-                seasonData?.episodes?.forEach { ep ->
-                    val epNum = ep.episodeNumber ?: return@forEach
+                for (j in 0 until epArray.length()) {
+                    val ep = epArray.optJSONObject(j) ?: continue
+                    val epNum = ep.optInt("episode_number", -1)
+                    if (epNum < 0) continue
 
                     episodes.add(
                         newEpisode("$tmdbId|tv|$seasonNum|$epNum") {
-                            this.name = ep.name
+                            this.name = ep.optString("name").takeIf { it.isNotBlank() }
                             this.season = seasonNum
                             this.episode = epNum
-                            this.posterUrl = ep.stillPath?.let { "$TMDB_IMAGE$it" }
-                            this.description = ep.overview
+                            this.posterUrl = ep.optString("still_path").takeIf { it.isNotBlank() }
+                                ?.let { "$TMDB_IMAGE$it" }
+                            this.description = ep.optString("overview").takeIf { it.isNotBlank() }
                         }
                     )
                 }
             }
 
-            newTvSeriesLoadResponse(data.name ?: "Unknown", url, TvType.TvSeries, episodes) {
-                this.posterUrl = data.posterPath?.let { "$TMDB_IMAGE$it" }
-                this.backgroundPosterUrl = data.backdropPath?.let { "$TMDB_IMAGE$it" }
-                this.plot = data.overview
-                this.year = data.firstAirDate?.take(4)?.toIntOrNull()
+            newTvSeriesLoadResponse(showName, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
+                this.backgroundPosterUrl = backdropPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
+                this.plot = overview.takeIf { it.isNotBlank() }
+                this.year = year
             }
         } else {
-            val data = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
-                .parsedSafe<TMDBDetail>() ?: return null
+            val raw = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY").text
+            val data = try { JSONObject(raw) } catch (_: Exception) { return null }
 
-            newMovieLoadResponse(data.title ?: "Unknown", url, TvType.Movie, "$tmdbId|movie|1|1") {
-                this.posterUrl = data.posterPath?.let { "$TMDB_IMAGE$it" }
-                this.backgroundPosterUrl = data.backdropPath?.let { "$TMDB_IMAGE$it" }
-                this.plot = data.overview
-                this.year = data.releaseDate?.take(4)?.toIntOrNull()
+            val title = data.optString("title").takeIf { it.isNotBlank() } ?: "Unknown"
+            val overview = data.optString("overview")
+            val posterPath = data.optString("poster_path")
+            val backdropPath = data.optString("backdrop_path")
+            val year = data.optString("release_date").take(4).toIntOrNull()
+
+            newMovieLoadResponse(title, url, TvType.Movie, "$tmdbId|movie|1|1") {
+                this.posterUrl = posterPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
+                this.backgroundPosterUrl = backdropPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
+                this.plot = overview.takeIf { it.isNotBlank() }
+                this.year = year
             }
         }
     }
