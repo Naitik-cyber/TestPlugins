@@ -123,10 +123,7 @@ class NX : MainAPI() {
             val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=external_ids")
             val data = rawResponse.parsedSafe<TMDBDetail>()
             
-            if (data == null) {
-                println("NX Plugin Error: Failed parsing TV Details.")
-                return null
-            }
+            if (data == null) return null
 
             val imdbId = data.external_ids?.imdb_id ?: data.imdb_id ?: ""
             val episodes = mutableListOf<Episode>()
@@ -151,12 +148,7 @@ class NX : MainAPI() {
                 }
             }
 
-            newTvSeriesLoadResponse(
-                data.name ?: "Unknown TV Show",
-                url,
-                TvType.TvSeries,
-                episodes
-            ) {
+            newTvSeriesLoadResponse(data.name ?: "Unknown", url, TvType.TvSeries, episodes) {
                 this.posterUrl = data.poster_path?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = data.backdrop_path?.let { "$TMDB_IMAGE$it" }
                 this.plot = data.overview
@@ -166,18 +158,10 @@ class NX : MainAPI() {
             val rawResponse = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
             val data = rawResponse.parsedSafe<TMDBDetail>()
             
-            if (data == null) {
-                println("NX Plugin Error: Failed parsing Movie Details.")
-                return null
-            }
+            if (data == null) return null
 
             val imdbId = data.imdb_id ?: ""
-            newMovieLoadResponse(
-                data.title ?: "Unknown Movie",
-                url,
-                TvType.Movie,
-                "$tmdbId|movie|1|1|$imdbId"
-            ) {
+            newMovieLoadResponse(data.title ?: "Unknown", url, TvType.Movie, "$tmdbId|movie|1|1|$imdbId") {
                 this.posterUrl = data.poster_path?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = data.backdrop_path?.let { "$TMDB_IMAGE$it" }
                 this.plot = data.overview
@@ -242,8 +226,16 @@ class NX : MainAPI() {
                         )
                     ).text
 
+                    // --- THE NUCLEAR DEBUG DUMP ---
+                    if (serverName == "MbPly-[Multi-Lang]") { 
+                        println("NX RAW HTML DUMP START ===================")
+                        println("Target URL: $targetUrl")
+                        println(rawHtml.take(1500)) 
+                        println("NX RAW HTML DUMP END =====================")
+                    }
+                    // ------------------------------
+
                     if (rawHtml.contains("Cloudflare") || rawHtml.contains("Just a moment...")) {
-                        println("NX Debug: Server [$serverName] is blocked by Cloudflare.")
                         continue 
                     }
 
@@ -254,8 +246,6 @@ class NX : MainAPI() {
                         var iframeUrl = match.groupValues[1]
                         if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
                         if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
-                        
-                        println("NX Debug: Found iframe -> $iframeUrl") 
 
                         if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
                             localFound = true
@@ -277,9 +267,7 @@ class NX : MainAPI() {
                                         )
                                         localFound = true
                                     }
-                            } catch (inner: Exception) { 
-                                println("NX Debug: Inner iframe extraction failed -> ${inner.message}")
-                            }
+                            } catch (inner: Exception) { }
                         }
                     }
 
@@ -298,9 +286,7 @@ class NX : MainAPI() {
                         )
                         localFound = true
                     }
-                } catch (e: Exception) {
-                    println("NX Debug: Node skipped [$serverName]: ${e.message}")
-                }
+                } catch (e: Exception) { }
             }
             localFound
         }
