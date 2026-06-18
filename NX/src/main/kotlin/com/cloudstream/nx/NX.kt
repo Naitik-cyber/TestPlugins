@@ -8,10 +8,17 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import android.content.Context
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+import android.util.Base64
+import org.json.JSONObject
 
-const val TMDB_API_KEY = "YOUR_TMDB_API_KEY_HERE"
+const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
+
+// NX encryption key extracted from JS source
+const val NX_KEY = "S8x!Jk4ZP1uG8\$my"
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBResponse(
@@ -155,6 +162,42 @@ class NX : MainAPI() {
         }
     }
 
+    // Encrypt data using NX's AES encryption
+    private fun encodeData(data: Map<String, Any>): String {
+        return try {
+            val json = JSONObject(data.toMutableMap().also {
+                it["_req_ts"] = System.currentTimeMillis()
+                it["_req_salt"] = (Math.random() * 1e10).toLong().toString(36)
+            }).toString()
+            val keySpec = SecretKeySpec(NX_KEY.toByteArray(Charsets.UTF_8), "AES")
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, keySpec)
+            val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
+            Base64.encodeToString(encrypted, Base64.NO_WRAP)
+                .replace("+", "-")
+                .replace("/", "_")
+                .replace("=", "")
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    // Decrypt NX API response
+    private fun decodeData(encrypted: String): JSONObject? {
+        return try {
+            var base64 = encrypted.replace("-", "+").replace("_", "/")
+            while (base64.length % 4 != 0) base64 += "="
+            val keySpec = SecretKeySpec(NX_KEY.toByteArray(Charsets.UTF_8), "AES")
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, keySpec)
+            val decoded = Base64.decode(base64, Base64.DEFAULT)
+            val decrypted = cipher.doFinal(decoded)
+            JSONObject(String(decrypted, Charsets.UTF_8))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -164,102 +207,87 @@ class NX : MainAPI() {
         val parts = data.split("|")
         val tmdbId = parts.getOrNull(0) ?: return false
         val type = parts.getOrNull(1) ?: "movie"
-        val season = parts.getOrNull(2) ?: "1"
-        val episode = parts.getOrNull(3) ?: "1"
-
-        val embedUrls = if (type == "tv") listOf(
-            "https://player.videasy.net/tv/$tmdbId/$season/$episode?autoplay=true",
-            "https://vidfast.pro/tv/$tmdbId/$season/$episode?autoplay=true",
-            "https://vidnest.fun/tv/$tmdbId/$season/$episode?autoplay=true",
-            "https://w1.moviesapi.to/tv/$tmdbId/$season/$episode?autoplay=true",
-            "https://111movies.net/tv/$tmdbId/$season/$episode?autoplay=true",
-            "https://player.vidzee.wtf/embed/tv/$tmdbId/$season/$episode?autoplay=true"
-        ) else listOf(
-            "https://player.videasy.net/movie/$tmdbId?autoplay=true",
-            "https://vidfast.pro/movie/$tmdbId?autoplay=true",
-            "https://vidnest.fun/movie/$tmdbId",
-            "https://w1.moviesapi.to/movie/$tmdbId?autoplay=true",
-            "https://111movies.net/movie/$tmdbId?autoplay=true",
-            "https://player.vidzee.wtf/embed/movie/$tmdbId?autoplay=true"
-        )
+        val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
+        val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
 
         var found = false
-        embedUrls.amap { embedUrl ->
-            try {
-                // Try built-in extractor first
-                if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) {
-                    found = true
-                    return@amap
+
+        try {
+            // Step 1: Encode request data using NX encryption
+            val requestData = mapOf(
+                "tmdbId" to tmdbId,
+                "imdb_id" to "",
+                "type" to type,
+                "season" to season,
+                "episode" to episode
+            )
+            val encoded = encodeData(requestData)
+            if (encoded.isEmpty()) return false
+
+            // Step 2: First API call
+            val firstResponse = app.get(
+                "$mainUrl/api/sources?q=$encoded",
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl,
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                )
+            ).text
+
+            val firstJson = JSONObject(firstResponse)
+            val hash1 = firstJson.optString("_hash") ?: return false
+
+            // Step 3: Second API call with hash
+            val secondResponse = app.get(
+                "$mainUrl/api/sources?q=$hash1",
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl,
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                )
+            ).text
+
+            val secondJson = JSONObject(secondResponse)
+            val hash2 = secondJson.optString("_hash")
+
+            // Step 4: Decode the hash to get sources
+            val decoded = if (hash2.isNotEmpty()) decodeData(hash2) else decodeData(hash1)
+            val sources = decoded?.optJSONArray("sources") ?: return false
+
+            // Step 5: Extract stream URLs
+            for (i in 0 until sources.length()) {
+                val source = sources.getJSONObject(i)
+                val streamUrl = source.optString("url") ?: continue
+                if (streamUrl.isEmpty()) continue
+
+                val isM3u8 = streamUrl.contains(".m3u8", true) || streamUrl.contains(".txt", true)
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = source.optString("name", name),
+                        url = streamUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = mainUrl
+                        this.quality = when (source.optString("quality", "").lowercase()) {
+                            "1080p", "fhd" -> Qualities.P1080.value
+                            "720p", "hd" -> Qualities.P720.value
+                            "480p", "sd" -> Qualities.P480.value
+                            else -> Qualities.Unknown.value
+                        }
+                    }
+                )
+                found = true
+
+                // Also try loadExtractor for embed sources
+                if (source.optBoolean("isEmbed", false)) {
+                    loadExtractor(streamUrl, mainUrl, subtitleCallback, callback)
                 }
-
-                // Manually fetch and extract m3u8/mp4 links
-                val html = app.get(
-                    embedUrl,
-                    referer = mainUrl,
-                    headers = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Accept" to "*/*",
-                        "Origin" to mainUrl
-                    )
-                ).text
-
-                // Search for m3u8 links
-                Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""", RegexOption.IGNORE_CASE)
-                    .findAll(html)
-                    .forEach { match ->
-                        val streamUrl = match.value.replace("\\u0026", "&").replace("\\/", "/").trim()
-                        if (streamUrl.length > 20) {
-                            callback(
-                                newExtractorLink(
-                                    source = name,
-                                    name = name,
-                                    url = streamUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = embedUrl
-                                    this.quality = Qualities.Unknown.value
-                                }
-                            )
-                            found = true
-                        }
-                    }
-
-                // Search for mp4 links
-                Regex("""https?://[^\s"'<>\\]+\.mp4[^\s"'<>\\]*""", RegexOption.IGNORE_CASE)
-                    .findAll(html)
-                    .forEach { match ->
-                        val streamUrl = match.value.replace("\\u0026", "&").replace("\\/", "/").trim()
-                        if (streamUrl.length > 20) {
-                            callback(
-                                newExtractorLink(
-                                    source = name,
-                                    name = name,
-                                    url = streamUrl,
-                                    type = ExtractorLinkType.VIDEO
-                                ) {
-                                    this.referer = embedUrl
-                                    this.quality = Qualities.Unknown.value
-                                }
-                            )
-                            found = true
-                        }
-                    }
-
-                // Search for iframe sources and try to extract from those too
-                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .findAll(html)
-                    .forEach { match ->
-                        var iframeUrl = match.groupValues[1]
-                        if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
-                        if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
-                        if (loadExtractor(iframeUrl, embedUrl, subtitleCallback, callback)) {
-                            found = true
-                        }
-                    }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
+
         return found
     }
 }
