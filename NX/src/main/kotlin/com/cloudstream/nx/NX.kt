@@ -21,6 +21,7 @@ const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 const val NX_KEY = "S8x!Jk4ZP1uG8\$my"
+
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBResponse(
     @JsonProperty("results") val results: List<TMDBItem>? = null
@@ -49,6 +50,13 @@ data class TMDBDetail(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBSeason(
+    @JsonProperty("season_number") val seasonNumber: Int? = null
+    // FIX 1: Remove `episodes` here — TMDB /tv/{id} does NOT include episodes
+    // in the seasons array. Fetching them separately below works correctly.
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class TMDBSeasonDetail(
     @JsonProperty("season_number") val seasonNumber: Int? = null,
     @JsonProperty("episodes") val episodes: List<TMDBEpisode>? = null
 )
@@ -59,6 +67,11 @@ data class TMDBEpisode(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("still_path") val stillPath: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class TMDBExternalIds(
+    @JsonProperty("imdb_id") val imdbId: String? = null
 )
 
 fun TMDBItem.toSearchResponse(api: MainAPI, forcedType: String? = null): SearchResponse? {
@@ -125,6 +138,8 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
+            // FIX 1: parsedSafe<TMDBDetail> now works because TMDBSeason no longer
+            // expects an `episodes` field that TMDB doesn't send here.
             val data = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY")
                 .parsedSafe<TMDBDetail>() ?: return null
 
@@ -134,8 +149,9 @@ class NX : MainAPI() {
                 val seasonNum = seasonItem.seasonNumber ?: return@forEach
                 if (seasonNum == 0) return@forEach
 
+                // FIX 1 (cont): Use TMDBSeasonDetail for the per-season fetch
                 val seasonData = app.get("$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY")
-                    .parsedSafe<TMDBSeason>()
+                    .parsedSafe<TMDBSeasonDetail>()
 
                 seasonData?.episodes?.forEach { ep ->
                     val epNum = ep.episodeNumber ?: return@forEach
@@ -170,217 +186,224 @@ class NX : MainAPI() {
             }
         }
     }
+
     private fun md5(data: ByteArray): ByteArray {
-    return MessageDigest.getInstance("MD5").digest(data)
-}
-
-private fun evpBytesToKey(
-    password: ByteArray,
-    salt: ByteArray,
-    keySize: Int = 32,
-    ivSize: Int = 16
-): Pair<ByteArray, ByteArray> {
-    val targetSize = keySize + ivSize
-    val derived = ArrayList<Byte>()
-    var block = ByteArray(0)
-
-    while (derived.size < targetSize) {
-        val input = block + password + salt
-        block = md5(input)
-        block.forEach { derived.add(it) }
+        return MessageDigest.getInstance("MD5").digest(data)
     }
 
-    val all = derived.toByteArray()
-    return all.copyOfRange(0, keySize) to all.copyOfRange(keySize, keySize + ivSize)
-}
+    private fun evpBytesToKey(
+        password: ByteArray,
+        salt: ByteArray,
+        keySize: Int = 32,
+        ivSize: Int = 16
+    ): Pair<ByteArray, ByteArray> {
+        val targetSize = keySize + ivSize
+        val derived = ArrayList<Byte>()
+        var block = ByteArray(0)
 
-private fun encodeData(data: Map<String, Any>): String {
-    return try {
-        val payload = data.toMutableMap().also {
-            it["_req_ts"] = System.currentTimeMillis()
-            it["_req_salt"] = Math.random().toString().substring(2).take(10)
+        while (derived.size < targetSize) {
+            val input = block + password + salt
+            block = md5(input)
+            block.forEach { derived.add(it) }
         }
 
-        val json = JSONObject(payload).toString()
-        val salt = ByteArray(8)
-        SecureRandom().nextBytes(salt)
-
-        val password = NX_KEY.toByteArray(Charsets.UTF_8)
-        val (key, iv) = evpBytesToKey(password, salt)
-
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(
-            Cipher.ENCRYPT_MODE,
-            SecretKeySpec(key, "AES"),
-            IvParameterSpec(iv)
-        )
-
-        val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
-        val openssl = "Salted__".toByteArray(Charsets.UTF_8) + salt + encrypted
-
-        Base64.encodeToString(openssl, Base64.NO_WRAP)
-            .replace("+", "-")
-            .replace("/", "_")
-            .replace("=", "")
-    } catch (_: Exception) {
-        ""
+        val all = derived.toByteArray()
+        return all.copyOfRange(0, keySize) to all.copyOfRange(keySize, keySize + ivSize)
     }
-}
 
-private fun decodeData(encrypted: String): JSONObject? {
-    return try {
-        var base64 = encrypted.replace("-", "+").replace("_", "/")
-        while (base64.length % 4 != 0) base64 += "="
+    // FIX 3: Build JSONObject explicitly to avoid Boolean serialization bugs
+    private fun encodeData(obj: JSONObject): String {
+        return try {
+            obj.put("_req_ts", System.currentTimeMillis())
+            obj.put("_req_salt", Math.random().toString().substring(2).take(10))
 
-        val raw = Base64.decode(base64, Base64.DEFAULT)
-        if (raw.size < 16) return null
+            val json = obj.toString()
+            val salt = ByteArray(8)
+            SecureRandom().nextBytes(salt)
 
-        val header = String(raw.copyOfRange(0, 8), Charsets.UTF_8)
-        if (header != "Salted__") return null
+            val password = NX_KEY.toByteArray(Charsets.UTF_8)
+            val (key, iv) = evpBytesToKey(password, salt)
 
-        val salt = raw.copyOfRange(8, 16)
-        val cipherText = raw.copyOfRange(16, raw.size)
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(
+                Cipher.ENCRYPT_MODE,
+                SecretKeySpec(key, "AES"),
+                IvParameterSpec(iv)
+            )
 
-        val password = NX_KEY.toByteArray(Charsets.UTF_8)
-        val (key, iv) = evpBytesToKey(password, salt)
+            val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
+            val openssl = "Salted__".toByteArray(Charsets.UTF_8) + salt + encrypted
 
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            SecretKeySpec(key, "AES"),
-            IvParameterSpec(iv)
-        )
-
-        val decrypted = cipher.doFinal(cipherText)
-        val json = JSONObject(String(decrypted, Charsets.UTF_8))
-
-        json.remove("_req_ts")
-        json.remove("_req_salt")
-
-        json
-    } catch (_: Exception) {
-        null
+            Base64.encodeToString(openssl, Base64.NO_WRAP)
+                .replace("+", "-")
+                .replace("/", "_")
+                .replace("=", "")
+        } catch (_: Exception) {
+            ""
+        }
     }
-}
+
+    private fun decodeData(encrypted: String): JSONObject? {
+        return try {
+            var base64 = encrypted.replace("-", "+").replace("_", "/")
+            while (base64.length % 4 != 0) base64 += "="
+
+            val raw = Base64.decode(base64, Base64.DEFAULT)
+            if (raw.size < 16) return null
+
+            val header = String(raw.copyOfRange(0, 8), Charsets.UTF_8)
+            if (header != "Salted__") return null
+
+            val salt = raw.copyOfRange(8, 16)
+            val cipherText = raw.copyOfRange(16, raw.size)
+
+            val password = NX_KEY.toByteArray(Charsets.UTF_8)
+            val (key, iv) = evpBytesToKey(password, salt)
+
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                SecretKeySpec(key, "AES"),
+                IvParameterSpec(iv)
+            )
+
+            val decrypted = cipher.doFinal(cipherText)
+            val json = JSONObject(String(decrypted, Charsets.UTF_8))
+
+            json.remove("_req_ts")
+            json.remove("_req_salt")
+
+            json
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    val parts = data.split("|")
-    val tmdbId = parts.getOrNull(0) ?: return false
-    val type = parts.getOrNull(1) ?: "movie"
-    val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
-    val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val parts = data.split("|")
+        val tmdbId = parts.getOrNull(0) ?: return false
+        val type = parts.getOrNull(1) ?: "movie"
+        val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
+        val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
 
-    val headers = mapOf(
-        "Referer" to mainUrl,
-        "Origin" to mainUrl,
-        "User-Agent" to "Mozilla/5.0"
-    )
-
-    var found = false
-
-    try {
-        val serversEncoded = encodeData(
-            mapOf(
-                "tmdbId" to tmdbId,
-                "imdb_id" to "",
-                "type" to type,
-                "season" to season,
-                "episode" to episode
-            )
+        val headers = mapOf(
+            "Referer" to mainUrl,
+            "Origin" to mainUrl,
+            "User-Agent" to "Mozilla/5.0"
         )
 
-        if (serversEncoded.isEmpty()) return false
+        // FIX 2: Fetch real IMDb ID from TMDB external IDs
+        val mediaPath = if (type == "tv") "tv" else "movie"
+        val imdbId = try {
+            app.get("$TMDB_BASE/$mediaPath/$tmdbId/external_ids?api_key=$TMDB_API_KEY")
+                .parsedSafe<TMDBExternalIds>()?.imdbId ?: ""
+        } catch (_: Exception) { "" }
 
-        val serversResponse = app.get(
-            "$mainUrl/api/servers?q=$serversEncoded",
-            headers = headers
-        ).text
+        var found = false
 
-        val serversHash = JSONObject(serversResponse).optString("_hash")
-        val serversJson = decodeData(serversHash) ?: return false
-        val servers = serversJson.optJSONArray("servers") ?: JSONArray()
-
-        for (i in 0 until servers.length()) {
-            val server = servers.optJSONObject(i) ?: continue
-
-            if (server.has("web_support") && !server.optBoolean("web_support")) {
-                continue
+        try {
+            // FIX 3: Build JSONObject directly — avoids Boolean/type serialization issues
+            val serversPayload = JSONObject().apply {
+                put("tmdbId", tmdbId)
+                put("imdb_id", imdbId)
+                put("type", type)
+                put("season", season)
+                put("episode", episode)
             }
 
-            val scraper = server.optString("scraper")
-            if (scraper.isBlank()) continue
+            val serversEncoded = encodeData(serversPayload)
+            if (serversEncoded.isEmpty()) return false
 
-            val sourcesEncoded = encodeData(
-                mapOf(
-                    "ex_lang" to false,
-                    "provider" to scraper,
-                    "tmdbId" to tmdbId,
-                    "imdb_id" to "",
-                    "type" to type,
-                    "season" to season,
-                    "episode" to episode
-                )
-            )
-
-            if (sourcesEncoded.isEmpty()) continue
-
-            val sourcesResponse = app.get(
-                "$mainUrl/api/sources?q=$sourcesEncoded",
+            val serversResponse = app.get(
+                "$mainUrl/api/servers?q=$serversEncoded",
                 headers = headers
             ).text
 
-            val sourcesHash = JSONObject(sourcesResponse).optString("_hash")
-            val sourcesJson = decodeData(sourcesHash) ?: continue
-            val sources = sourcesJson.optJSONArray("sources") ?: continue
+            val serversHash = JSONObject(serversResponse).optString("_hash")
+            val serversJson = decodeData(serversHash) ?: return false
+            val servers = serversJson.optJSONArray("servers") ?: JSONArray()
 
-            for (j in 0 until sources.length()) {
-                val source = sources.optJSONObject(j) ?: continue
-                val streamUrl = source.optString("url")
-                if (streamUrl.isBlank()) continue
+            for (i in 0 until servers.length()) {
+                val server = servers.optJSONObject(i) ?: continue
 
-                if (source.optBoolean("isEmbed", false)) {
-                    if (loadExtractor(streamUrl, mainUrl, subtitleCallback, callback)) {
-                        found = true
-                    }
+                // FIX 4: Only skip if web_support is explicitly false (not missing)
+                if (server.has("web_support") && !server.optBoolean("web_support", true)) {
                     continue
                 }
 
-                val isM3u8 = streamUrl.contains(".m3u8", true) ||
-                    source.optString("type").contains("hls", true)
+                val scraper = server.optString("scraper")
+                if (scraper.isBlank()) continue
 
-                callback(
-                    newExtractorLink(
-                        source = server.optString("name", name),
-                        name = source.optString("quality", server.optString("name", name)),
-                        url = streamUrl,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = mainUrl
-                        this.quality = when (source.optString("quality", "").lowercase()) {
-                            "2160p", "4k" -> Qualities.P2160.value
-                            "1080p", "fhd" -> Qualities.P1080.value
-                            "720p", "hd" -> Qualities.P720.value
-                            "480p", "sd" -> Qualities.P480.value
-                            "360p" -> Qualities.P360.value
-                            else -> Qualities.Unknown.value
+                // FIX 3: Build JSONObject directly — ex_lang as real Boolean
+                val sourcesPayload = JSONObject().apply {
+                    put("ex_lang", false)
+                    put("provider", scraper)
+                    put("tmdbId", tmdbId)
+                    put("imdb_id", imdbId)
+                    put("type", type)
+                    put("season", season)
+                    put("episode", episode)
+                }
+
+                val sourcesEncoded = encodeData(sourcesPayload)
+                if (sourcesEncoded.isEmpty()) continue
+
+                val sourcesResponse = app.get(
+                    "$mainUrl/api/sources?q=$sourcesEncoded",
+                    headers = headers
+                ).text
+
+                val sourcesHash = JSONObject(sourcesResponse).optString("_hash")
+                val sourcesJson = decodeData(sourcesHash) ?: continue
+                val sources = sourcesJson.optJSONArray("sources") ?: continue
+
+                for (j in 0 until sources.length()) {
+                    val source = sources.optJSONObject(j) ?: continue
+                    val streamUrl = source.optString("url")
+                    if (streamUrl.isBlank()) continue
+
+                    if (source.optBoolean("isEmbed", false)) {
+                        if (loadExtractor(streamUrl, mainUrl, subtitleCallback, callback)) {
+                            found = true
                         }
+                        continue
                     }
-                )
 
-                found = true
+                    val isM3u8 = streamUrl.contains(".m3u8", true) ||
+                        source.optString("type").contains("hls", true)
+
+                    callback(
+                        newExtractorLink(
+                            source = server.optString("name", name),
+                            name = source.optString("quality", server.optString("name", name)),
+                            url = streamUrl,
+                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = mainUrl
+                            this.quality = when (source.optString("quality", "").lowercase()) {
+                                "2160p", "4k" -> Qualities.P2160.value
+                                "1080p", "fhd" -> Qualities.P1080.value
+                                "720p", "hd" -> Qualities.P720.value
+                                "480p", "sd" -> Qualities.P480.value
+                                "360p" -> Qualities.P360.value
+                                else -> Qualities.Unknown.value
+                            }
+                        }
+                    )
+                    found = true
+                }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
 
-    return found
-}
+        return found
+    }
 }
 
 @CloudstreamPlugin
