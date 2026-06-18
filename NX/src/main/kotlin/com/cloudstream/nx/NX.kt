@@ -30,11 +30,6 @@ data class TMDBItem(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class ExternalIds(
-    @JsonProperty("imdb_id") val imdb_id: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBDetail(
     @JsonProperty("id") val id: Int? = null,
     @JsonProperty("title") val title: String? = null,
@@ -45,8 +40,7 @@ data class TMDBDetail(
     @JsonProperty("release_date") val release_date: String? = null,
     @JsonProperty("first_air_date") val first_air_date: String? = null,
     @JsonProperty("seasons") val seasons: List<TMDBSeason>? = null,
-    @JsonProperty("imdb_id") val imdb_id: String? = null,
-    @JsonProperty("external_ids") val external_ids: ExternalIds? = null
+    @JsonProperty("imdb_id") val imdb_id: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -97,13 +91,11 @@ class NX : MainAPI() {
         val url = "${request.data}&page=$page"
         val response = app.get(url).parsedSafe<TMDBResponse>()
             ?: return newHomePageResponse(request.name, emptyList())
-        
         val forcedType = when {
             request.data.contains("/tv/") -> "tv"
             request.data.contains("/movie/") -> "movie"
             else -> null
         }
-        
         val items = response.results?.mapNotNull { it.toSearchResponse(this, forcedType) } ?: emptyList()
         return newHomePageResponse(request.name, items)
     }
@@ -120,12 +112,9 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
 
         return if (type == "tv") {
-            val rawResponse = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=external_ids")
-            val data = rawResponse.parsedSafe<TMDBDetail>()
-            
-            if (data == null) return null
+            val data = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY&append_to_response=external_ids")
+                .parsedSafe<TMDBDetail>() ?: return null
 
-            val imdbId = data.external_ids?.imdb_id ?: data.imdb_id ?: ""
             val episodes = mutableListOf<Episode>()
             data.seasons?.forEach { season ->
                 val seasonNum = season.season_number ?: return@forEach
@@ -133,11 +122,10 @@ class NX : MainAPI() {
                 val seasonData = app.get(
                     "$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY"
                 ).parsedSafe<TMDBSeason>()
-                
                 seasonData?.episodes?.forEach { ep ->
                     val epNum = ep.episode_number ?: return@forEach
                     episodes.add(
-                        newEpisode("$tmdbId|tv|$seasonNum|$epNum|$imdbId") {
+                        newEpisode("$tmdbId|tv|$seasonNum|$epNum") {
                             this.name = ep.name
                             this.season = seasonNum
                             this.episode = epNum
@@ -155,13 +143,10 @@ class NX : MainAPI() {
                 this.year = data.first_air_date?.take(4)?.toIntOrNull()
             }
         } else {
-            val rawResponse = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
-            val data = rawResponse.parsedSafe<TMDBDetail>()
-            
-            if (data == null) return null
+            val data = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY")
+                .parsedSafe<TMDBDetail>() ?: return null
 
-            val imdbId = data.imdb_id ?: ""
-            newMovieLoadResponse(data.title ?: "Unknown", url, TvType.Movie, "$tmdbId|movie|1|1|$imdbId") {
+            newMovieLoadResponse(data.title ?: "Unknown", url, TvType.Movie, "$tmdbId|movie|1|1") {
                 this.posterUrl = data.poster_path?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = data.backdrop_path?.let { "$TMDB_IMAGE$it" }
                 this.plot = data.overview
@@ -181,114 +166,30 @@ class NX : MainAPI() {
         val type = parts.getOrNull(1) ?: "movie"
         val season = parts.getOrNull(2) ?: "1"
         val episode = parts.getOrNull(3) ?: "1"
-        val imdbId = parts.getOrNull(4) ?: ""
 
-        val targetServers = listOf(
-            "MbPly-[Multi-Lang]", "ZetPly-[Multi-Lang]", "OrVid-[Multi-Lang]", 
-            "QsPly-[Multi-Lang]", "Xuhd-[Multi-Lang]", "Ophm", 
-            "Multi-Kil-[Multi-Lang]", "Omen", "YFLIX", "Neon", "Cypher", 
-            "Breach", "Vyse", "Fade", "Raze", "River", "VidLnx", "RPM", 
-            "MU4", "Rive-Ophim", "Gbru", "HindiSk", "Prvibd", "AsiaLug", 
-            "WbStrmr", "Vnst-Ophim", "Vnst-Alfa", "Vnst-Beta", "Vnst-Lamda", 
-            "Vnst-Prime", "Vnst-Gama", "Vnst-Sigma", "Vnst-Hexa", "Vnst-Catflix"
+        val embedUrls = if (type == "tv") listOf(
+            "https://player.videasy.net/tv/$tmdbId/$season/$episode?autoplay=true",
+            "https://vidfast.pro/tv/$tmdbId/$season/$episode?autoplay=true",
+            "https://vidnest.fun/tv/$tmdbId/$season/$episode?autoplay=true",
+            "https://w1.moviesapi.to/tv/$tmdbId/$season/$episode?autoplay=true",
+            "https://111movies.net/tv/$tmdbId/$season/$episode?autoplay=true",
+            "https://player.vidzee.wtf/embed/tv/$tmdbId/$season/$episode?autoplay=true"
+        ) else listOf(
+            "https://player.videasy.net/movie/$tmdbId?autoplay=true",
+            "https://vidfast.pro/movie/$tmdbId?autoplay=true",
+            "https://vidnest.fun/movie/$tmdbId",
+            "https://w1.moviesapi.to/movie/$tmdbId?autoplay=true",
+            "https://111movies.net/movie/$tmdbId?autoplay=true",
+            "https://player.vidzee.wtf/embed/movie/$tmdbId?autoplay=true"
         )
 
-        val preferredId = if (imdbId.isNotEmpty() && imdbId.startsWith("tt")) imdbId else tmdbId
-
-       val baseUrls = if (type == "tv") {
-    listOf(
-        "$mainUrl/embed/tv/$tmdbId/$season/$episode"
-    )
-} else {
-    listOf(
-        "$mainUrl/embed/movie/$tmdbId"
-    )
-}
-        val results = targetServers.amap { serverName ->
-            var localFound = false
-            
-            for (baseUrl in baseUrls) {
-                if (localFound) break
-                try {
-                    val encodedServer = java.net.URLEncoder.encode(serverName, "UTF-8")
-                    val targetUrl = "$baseUrl?server=$encodedServer&one_server=true&lang=en"
-                    
-                    val rawHtml = app.get(
-                        targetUrl,
-                        referer = mainUrl,
-                        headers = mapOf(
-                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                            "Accept-Language" to "en-US,en;q=0.5"
-                        )
-                    ).text
-
-                    // --- THE NUCLEAR DEBUG DUMP ---
-                    if (serverName == "MbPly-[Multi-Lang]") { 
-                        println("NX RAW HTML DUMP START ===================")
-                        println("Target URL: $targetUrl")
-                        println(rawHtml.take(1500)) 
-                        println("NX RAW HTML DUMP END =====================")
-                    }
-                    // ------------------------------
-
-                    if (rawHtml.contains("Cloudflare") || rawHtml.contains("Just a moment...")) {
-                        continue 
-                    }
-
-                    val html = rawHtml.replace("\\/", "/")
-
-                    val iframeRegex = """<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
-                    iframeRegex.findAll(html).forEach { match ->
-                        var iframeUrl = match.groupValues[1]
-                        if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
-                        if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
-
-                        if (loadExtractor(iframeUrl, targetUrl, subtitleCallback, callback)) {
-                            localFound = true
-                        } else {
-                            try {
-                                val subHtml = app.get(iframeUrl, referer = targetUrl).text.replace("\\/", "/")
-                                """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
-                                    .findAll(subHtml).forEach { subMatch ->
-                                        callback(
-                                            newExtractorLink(
-                                                source = name,
-                                                name = "NX $serverName (Direct)",
-                                                url = subMatch.value.trim(),
-                                                type = ExtractorLinkType.M3U8
-                                            ) {
-                                                this.referer = iframeUrl
-                                                this.quality = Qualities.Unknown.value
-                                            }
-                                        )
-                                        localFound = true
-                                    }
-                            } catch (inner: Exception) { }
-                        }
-                    }
-
-                    val m3u8Regex = """https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""".toRegex(RegexOption.IGNORE_CASE)
-                    m3u8Regex.findAll(html).forEach { match ->
-                        callback(
-                            newExtractorLink(
-                                source = name,
-                                name = "NX $serverName",
-                                url = match.value.trim(),
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = targetUrl
-                                this.quality = Qualities.Unknown.value
-                            }
-                        )
-                        localFound = true
-                    }
-                } catch (e: Exception) { }
+        var found = false
+        embedUrls.amap { embedUrl ->
+            if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) {
+                found = true
             }
-            localFound
         }
-
-        return results.any { it }
+        return found
     }
 }
 
