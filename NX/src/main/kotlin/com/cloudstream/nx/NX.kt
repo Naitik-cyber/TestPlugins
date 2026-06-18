@@ -195,18 +195,15 @@ class NX : MainAPI() {
 
         val preferredId = if (imdbId.isNotEmpty() && imdbId.startsWith("tt")) imdbId else tmdbId
 
-        val baseUrls = if (type == "tv") {
-            listOf(
-                "$mainUrl/embed/tv/$preferredId/$season/$episode",
-                "$mainUrl/embed/tv/$tmdbId/$season/$episode"
-            )
-        } else {
-            listOf(
-                "$mainUrl/embed/movie/$preferredId",
-                "$mainUrl/embed/movie/$tmdbId"
-            )
-        }
-
+       val baseUrls = if (type == "tv") {
+    listOf(
+        "$mainUrl/embed/tv/$tmdbId/$season/$episode"
+    )
+} else {
+    listOf(
+        "$mainUrl/embed/movie/$tmdbId"
+    )
+}
         val results = targetServers.amap { serverName ->
             var localFound = false
             
