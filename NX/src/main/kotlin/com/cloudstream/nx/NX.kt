@@ -9,7 +9,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import android.content.Context
 
-const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
+const val TMDB_API_KEY = "YOUR_TMDB_API_KEY_HERE"
 const val TMDB_BASE = "https://api.themoviedb.org/3"
 const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 
@@ -185,8 +185,79 @@ class NX : MainAPI() {
 
         var found = false
         embedUrls.amap { embedUrl ->
-            if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) {
-                found = true
+            try {
+                // Try built-in extractor first
+                if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) {
+                    found = true
+                    return@amap
+                }
+
+                // Manually fetch and extract m3u8/mp4 links
+                val html = app.get(
+                    embedUrl,
+                    referer = mainUrl,
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept" to "*/*",
+                        "Origin" to mainUrl
+                    )
+                ).text
+
+                // Search for m3u8 links
+                Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""", RegexOption.IGNORE_CASE)
+                    .findAll(html)
+                    .forEach { match ->
+                        val streamUrl = match.value.replace("\\u0026", "&").replace("\\/", "/").trim()
+                        if (streamUrl.length > 20) {
+                            callback(
+                                newExtractorLink(
+                                    source = name,
+                                    name = name,
+                                    url = streamUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = embedUrl
+                                    this.quality = Qualities.Unknown.value
+                                }
+                            )
+                            found = true
+                        }
+                    }
+
+                // Search for mp4 links
+                Regex("""https?://[^\s"'<>\\]+\.mp4[^\s"'<>\\]*""", RegexOption.IGNORE_CASE)
+                    .findAll(html)
+                    .forEach { match ->
+                        val streamUrl = match.value.replace("\\u0026", "&").replace("\\/", "/").trim()
+                        if (streamUrl.length > 20) {
+                            callback(
+                                newExtractorLink(
+                                    source = name,
+                                    name = name,
+                                    url = streamUrl,
+                                    type = ExtractorLinkType.VIDEO
+                                ) {
+                                    this.referer = embedUrl
+                                    this.quality = Qualities.Unknown.value
+                                }
+                            )
+                            found = true
+                        }
+                    }
+
+                // Search for iframe sources and try to extract from those too
+                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(html)
+                    .forEach { match ->
+                        var iframeUrl = match.groupValues[1]
+                        if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
+                        if (iframeUrl.startsWith("/")) iframeUrl = "$mainUrl$iframeUrl"
+                        if (loadExtractor(iframeUrl, embedUrl, subtitleCallback, callback)) {
+                            found = true
+                        }
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
         return found
