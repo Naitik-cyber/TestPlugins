@@ -79,13 +79,15 @@ fun TMDBItem.toSearchResponse(api: MainAPI, forcedType: String? = null): SearchR
     val type = forcedType ?: if (mediaType == "tv") "tv" else "movie"
     val displayTitle = title ?: name ?: return null
     val poster = posterPath?.let { "$TMDB_IMAGE$it" }
+    // Use nxid:// prefix so Cloudstream doesn't prepend mainUrl to the data string
+    val dataUrl = "nxid://$tmdbId|$type"
 
     return if (type == "tv") {
-        api.newTvSeriesSearchResponse(displayTitle, "$tmdbId|tv", TvType.TvSeries, false) {
+        api.newTvSeriesSearchResponse(displayTitle, dataUrl, TvType.TvSeries, false) {
             this.posterUrl = poster
         }
     } else {
-        api.newMovieSearchResponse(displayTitle, "$tmdbId|movie", TvType.Movie, false) {
+        api.newMovieSearchResponse(displayTitle, dataUrl, TvType.Movie, false) {
             this.posterUrl = poster
         }
     }
@@ -133,11 +135,9 @@ class NX : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        android.util.Log.e("NX_DEBUG", "=== load() url: $url ===")  
         val parts = url.split("|")
         val tmdbId = parts.getOrNull(0) ?: return null
         val type = parts.getOrNull(1) ?: "movie"
-         android.util.Log.e("NX_DEBUG", "tmdbId=$tmdbId type=$type") 
 
         return if (type == "tv") {
             val raw = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY").text
@@ -169,7 +169,7 @@ class NX : MainAPI() {
                     if (epNum < 0) continue
 
                     episodes.add(
-                        newEpisode("$tmdbId|tv|$seasonNum|$epNum") {
+                        newEpisode("nxid://$tmdbId|tv|$seasonNum|$epNum") {
                             this.name = ep.optString("name").takeIf { it.isNotBlank() }
                             this.season = seasonNum
                             this.episode = epNum
@@ -197,7 +197,7 @@ class NX : MainAPI() {
             val backdropPath = data.optString("backdrop_path")
             val year = data.optString("release_date").take(4).toIntOrNull()
 
-            newMovieLoadResponse(title, url, TvType.Movie, "$tmdbId|movie|1|1") {
+            newMovieLoadResponse(title, url, TvType.Movie, "nxid://$tmdbId|movie|1|1") {
                 this.posterUrl = posterPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
                 this.backgroundPosterUrl = backdropPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
                 this.plot = overview.takeIf { it.isNotBlank() }
@@ -304,7 +304,8 @@ class NX : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val parts = data.split("|")
+        val clean = data.removePrefix("nxid://").removePrefix("https://nxsha.space/")
+        val parts = clean.split("|")
         val tmdbId = parts.getOrNull(0) ?: return false
         val type = parts.getOrNull(1) ?: "movie"
         val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
