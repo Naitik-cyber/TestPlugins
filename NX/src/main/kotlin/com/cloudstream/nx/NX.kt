@@ -133,9 +133,11 @@ class NX : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        android.util.Log.e("NX_DEBUG", "=== load() url: $url ===")  
         val parts = url.split("|")
         val tmdbId = parts.getOrNull(0) ?: return null
         val type = parts.getOrNull(1) ?: "movie"
+         android.util.Log.e("NX_DEBUG", "tmdbId=$tmdbId type=$type") 
 
         return if (type == "tv") {
             val raw = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY").text
