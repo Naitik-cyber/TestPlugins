@@ -304,9 +304,13 @@ class NX : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val clean = data.removePrefix("nxid://").removePrefix("https://nxsha.space/")
-        val parts = clean.split("|")
-        val tmdbId = parts.getOrNull(0) ?: return false
+        android.util.Log.e("NX_DEBUG", "loadLinks() raw data=$data")
+        val idMatch = Regex("""(\d+)\|(tv|movie)\|?(\d*)\|?(\d*)""").find(data)
+        val tmdbId = idMatch?.groupValues?.get(1) ?: return false
+        val type = idMatch.groupValues[2]
+        val season = idMatch.groupValues[3].toIntOrNull() ?: 1
+        val episode = idMatch.groupValues[4].toIntOrNull() ?: 1
+        android.util.Log.e("NX_DEBUG", "loadLinks() tmdbId=$tmdbId type=$type s=$season e=$episode")
         val type = parts.getOrNull(1) ?: "movie"
         val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
         val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
