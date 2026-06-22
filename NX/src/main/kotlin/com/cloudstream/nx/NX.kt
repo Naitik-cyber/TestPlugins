@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import android.util.Base64
 import org.jsoup.nodes.Document
 
@@ -17,7 +18,7 @@ class PopcornMoviesProvider : MainAPI() {
     override val supportedTypes       = setOf(TvType.Movie, TvType.TvSeries)
 
     // ── TMDB ─────────────────────────────────────────────────────────────────
-    private val tmdbKey    = "d48c912adb725b6424a3ce88671982b9"
+    private val tmdbKey    = "YOUR_TMDB_API_KEY_HERE"
     private val tmdbBase   = "https://api.themoviedb.org/3"
     private val tmdbImg    = "https://image.tmdb.org/t/p/w500"
     private val tmdbImgBg  = "https://image.tmdb.org/t/p/w1280"
@@ -77,7 +78,7 @@ class PopcornMoviesProvider : MainAPI() {
             backgroundPosterUrl = detail.backdropPath?.let { tmdbImgBg + it }
             plot                = detail.overview
             year                = detail.releaseDate?.take(4)?.toIntOrNull()
-            rating              = (detail.voteAverage * 10).toInt()
+            score               = (detail.voteAverage * 10).toInt()
             tags                = detail.genres?.map { it.name }
         }
     }
@@ -92,7 +93,7 @@ class PopcornMoviesProvider : MainAPI() {
 
         detail.seasons?.forEach { season ->
             if (season.seasonNumber == 0) return@forEach
-            val sNum    = season.seasonNumber
+            val sNum = season.seasonNumber
             val sDetail = app.get(
                 "$tmdbBase/tv/${data.tmdbId}/season/$sNum?api_key=$tmdbKey&language=en-US"
             ).parsedSafe<TmdbSeasonDetail>()
@@ -121,7 +122,7 @@ class PopcornMoviesProvider : MainAPI() {
             backgroundPosterUrl = detail.backdropPath?.let { tmdbImgBg + it }
             plot                = detail.overview
             year                = detail.firstAirDate?.take(4)?.toIntOrNull()
-            rating              = (detail.voteAverage * 10).toInt()
+            score               = (detail.voteAverage * 10).toInt()
             tags                = detail.genres?.map { it.name }
         }
     }
@@ -186,15 +187,16 @@ class PopcornMoviesProvider : MainAPI() {
                             else   -> Qualities.Unknown.value
                         }
 
-                        callback(ExtractorLink(
-                            source   = this.name,
-                            name     = "PopcornMovies • $label",
-                            url      = streamUrl,
-                            referer  = "$mainUrl/",
-                            quality  = quality,
-                            isM3u8   = isHls,
-                            headers  = mapOf("Referer" to "$mainUrl/")
-                        ))
+                        callback(newExtractorLink(
+                            source  = this.name,
+                            name    = "PopcornMovies • $label",
+                            url     = streamUrl,
+                            type    = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = "$mainUrl/"
+                            this.quality = quality
+                            this.headers = mapOf("Referer" to "$mainUrl/")
+                        })
                         foundAny = true
                     }
 
