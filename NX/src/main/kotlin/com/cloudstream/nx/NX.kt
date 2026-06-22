@@ -1,438 +1,331 @@
-package com.cloudstream.nx
+package com.lagradost.cloudstream3.movieproviders
 
-import android.content.Context
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
-import java.net.URLEncoder
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import android.util.Base64
-import org.json.JSONObject
-import org.json.JSONArray
-import java.security.MessageDigest
-import java.security.SecureRandom
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import org.jsoup.nodes.Document
 
-const val TMDB_API_KEY = "d48c912adb725b6424a3ce88671982b9"
-const val TMDB_BASE = "https://api.themoviedb.org/3"
-const val TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
-const val NX_KEY = "S8x!Jk4ZP1uG8\$my"
+class PopcornMoviesProvider : MainAPI() {
 
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBResponse(
-    @JsonProperty("results") val results: List<TMDBItem>? = null
-)
+    override var mainUrl              = "https://popcornmovies.org"
+    override var name                 = "PopcornMovies"
+    override val hasMainPage          = true
+    override var lang                 = "en"
+    override val hasDownloadSupport   = true
+    override val supportedTypes       = setOf(TvType.Movie, TvType.TvSeries)
 
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBItem(
-    @JsonProperty("id") val id: Int? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("poster_path") val posterPath: String? = null,
-    @JsonProperty("media_type") val mediaType: String? = null
-)
+    // ── TMDB ─────────────────────────────────────────────────────────────────
+    private val tmdbKey    = "d48c912adb725b6424a3ce88671982b9"
+    private val tmdbBase   = "https://api.themoviedb.org/3"
+    private val tmdbImg    = "https://image.tmdb.org/t/p/w500"
+    private val tmdbImgBg  = "https://image.tmdb.org/t/p/w1280"
 
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBDetail(
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("overview") val overview: String? = null,
-    @JsonProperty("poster_path") val posterPath: String? = null,
-    @JsonProperty("backdrop_path") val backdropPath: String? = null,
-    @JsonProperty("release_date") val releaseDate: String? = null,
-    @JsonProperty("first_air_date") val firstAirDate: String? = null,
-    @JsonProperty("seasons") val seasons: List<TMDBSeason>? = null
-)
+    // ── HEADERS ───────────────────────────────────────────────────────────────
+    private val pcHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer"    to "$mainUrl/",
+        "Origin"     to mainUrl
+    )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBSeason(
-    @JsonProperty("season_number") val seasonNumber: Int? = null
-    // FIX 1: Remove `episodes` here — TMDB /tv/{id} does NOT include episodes
-    // in the seasons array. Fetching them separately below works correctly.
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBSeasonDetail(
-    @JsonProperty("season_number") val seasonNumber: Int? = null,
-    @JsonProperty("episodes") val episodes: List<TMDBEpisode>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBEpisode(
-    @JsonProperty("episode_number") val episodeNumber: Int? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("overview") val overview: String? = null,
-    @JsonProperty("still_path") val stillPath: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBExternalIds(
-    @JsonProperty("imdb_id") val imdbId: String? = null
-)
-
-fun TMDBItem.toSearchResponse(api: MainAPI, forcedType: String? = null): SearchResponse? {
-    val tmdbId = id ?: return null
-    val type = forcedType ?: if (mediaType == "tv") "tv" else "movie"
-    val displayTitle = title ?: name ?: return null
-    val poster = posterPath?.let { "$TMDB_IMAGE$it" }
-    // Use nxid:// prefix so Cloudstream doesn't prepend mainUrl to the data string
-    val dataUrl = "nxid://$tmdbId|$type"
-
-    return if (type == "tv") {
-        api.newTvSeriesSearchResponse(displayTitle, dataUrl, TvType.TvSeries, false) {
-            this.posterUrl = poster
-        }
-    } else {
-        api.newMovieSearchResponse(displayTitle, dataUrl, TvType.Movie, false) {
-            this.posterUrl = poster
-        }
-    }
-}
-
-class NX : MainAPI() {
-    override var mainUrl = "https://nxsha.space"
-    override var name = "NX"
-    override var lang = "en"
-    override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-
+    // ── MAIN PAGE ─────────────────────────────────────────────────────────────
     override val mainPage = mainPageOf(
-        "$TMDB_BASE/movie/popular?api_key=$TMDB_API_KEY" to "Popular Movies",
-        "$TMDB_BASE/tv/popular?api_key=$TMDB_API_KEY" to "Popular TV Shows",
-        "$TMDB_BASE/movie/top_rated?api_key=$TMDB_API_KEY" to "Top Rated Movies",
-        "$TMDB_BASE/trending/all/week?api_key=$TMDB_API_KEY" to "Trending"
+        "$tmdbBase/movie/popular?api_key=$tmdbKey&language=en-US&page="       to "Popular Movies",
+        "$tmdbBase/trending/movie/week?api_key=$tmdbKey&language=en-US&page=" to "Trending Movies",
+        "$tmdbBase/movie/top_rated?api_key=$tmdbKey&language=en-US&page="     to "Top Rated Movies",
+        "$tmdbBase/tv/popular?api_key=$tmdbKey&language=en-US&page="          to "Popular TV Shows",
+        "$tmdbBase/trending/tv/week?api_key=$tmdbKey&language=en-US&page="    to "Trending TV Shows",
+        "$tmdbBase/tv/top_rated?api_key=$tmdbKey&language=en-US&page="        to "Top Rated TV Shows",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val response = app.get("${request.data}&page=$page").parsedSafe<TMDBResponse>()
-            ?: return newHomePageResponse(request.name, emptyList())
-
-        val forcedType = when {
-            request.data.contains("/tv/") -> "tv"
-            request.data.contains("/movie/") -> "movie"
-            else -> null
-        }
-
-        val items = response.results?.mapNotNull {
-            it.toSearchResponse(this, forcedType)
-        } ?: emptyList()
-
+        val json  = app.get(request.data + page).parsedSafe<TmdbPage>() ?: return newHomePageResponse(emptyList())
+        val items = json.results.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(request.name, items)
     }
 
+    // ── SEARCH ────────────────────────────────────────────────────────────────
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val response = app.get("$TMDB_BASE/search/multi?api_key=$TMDB_API_KEY&query=$encodedQuery")
-            .parsedSafe<TMDBResponse>() ?: return emptyList()
-
-        return response.results?.mapNotNull {
-            it.toSearchResponse(this)
-        } ?: emptyList()
+        val json = app.get(
+            "$tmdbBase/search/multi?api_key=$tmdbKey&query=${query.encodeUrl()}&language=en-US&page=1"
+        ).parsedSafe<TmdbPage>() ?: return emptyList()
+        return json.results.mapNotNull { it.toSearchResponse() }
     }
 
+    // ── LOAD ──────────────────────────────────────────────────────────────────
     override suspend fun load(url: String): LoadResponse? {
-        val parts = url.split("|")
-        val tmdbId = parts.getOrNull(0) ?: return null
-        val type = parts.getOrNull(1) ?: "movie"
+        val data = parseJson<DataHolder>(url)
+        return if (data.type == "movie") loadMovie(data) else loadTvSeries(data)
+    }
 
-        return if (type == "tv") {
-            val raw = app.get("$TMDB_BASE/tv/$tmdbId?api_key=$TMDB_API_KEY").text
-            val data = try { JSONObject(raw) } catch (_: Exception) { return null }
+    private suspend fun loadMovie(data: DataHolder): MovieLoadResponse? {
+        val detail = app.get(
+            "$tmdbBase/movie/${data.tmdbId}?api_key=$tmdbKey&language=en-US"
+        ).parsedSafe<TmdbMovieDetail>() ?: return null
 
-            val showName = data.optString("name").takeIf { it.isNotBlank() } ?: "Unknown"
-            val overview = data.optString("overview")
-            val posterPath = data.optString("poster_path")
-            val backdropPath = data.optString("backdrop_path")
-            val year = data.optString("first_air_date").take(4).toIntOrNull()
+        val slug       = buildSlug(detail.title, detail.releaseDate?.take(4)?.toIntOrNull())
+        val popcornUrl = "$mainUrl/movie/$slug"
 
-            val episodes = mutableListOf<Episode>()
-            val seasons = data.optJSONArray("seasons") ?: JSONArray()
+        return newMovieLoadResponse(
+            name    = detail.title,
+            url     = DataHolder(data.tmdbId, "movie", popcornUrl).toJson(),
+            type    = TvType.Movie,
+            dataUrl = DataHolder(data.tmdbId, "movie", popcornUrl).toJson()
+        ) {
+            posterUrl           = detail.posterPath?.let { tmdbImg + it }
+            backgroundPosterUrl = detail.backdropPath?.let { tmdbImgBg + it }
+            plot                = detail.overview
+            year                = detail.releaseDate?.take(4)?.toIntOrNull()
+            rating              = (detail.voteAverage * 10).toInt()
+            tags                = detail.genres?.map { it.name }
+        }
+    }
 
-            for (i in 0 until seasons.length()) {
-                val seasonObj = seasons.optJSONObject(i) ?: continue
-                val seasonNum = seasonObj.optInt("season_number", -1)
-                if (seasonNum <= 0) continue
+    private suspend fun loadTvSeries(data: DataHolder): TvSeriesLoadResponse? {
+        val detail = app.get(
+            "$tmdbBase/tv/${data.tmdbId}?api_key=$tmdbKey&language=en-US"
+        ).parsedSafe<TmdbTvDetail>() ?: return null
 
-                val seasonRaw = app.get(
-                    "$TMDB_BASE/tv/$tmdbId/season/$seasonNum?api_key=$TMDB_API_KEY"
-                ).text
-                val seasonData = try { JSONObject(seasonRaw) } catch (_: Exception) { continue }
-                val epArray = seasonData.optJSONArray("episodes") ?: continue
+        val slug     = buildSlug(detail.name, detail.firstAirDate?.take(4)?.toIntOrNull())
+        val episodes = mutableListOf<Episode>()
 
-                for (j in 0 until epArray.length()) {
-                    val ep = epArray.optJSONObject(j) ?: continue
-                    val epNum = ep.optInt("episode_number", -1)
-                    if (epNum < 0) continue
+        detail.seasons?.forEach { season ->
+            if (season.seasonNumber == 0) return@forEach
+            val sNum    = season.seasonNumber
+            val sDetail = app.get(
+                "$tmdbBase/tv/${data.tmdbId}/season/$sNum?api_key=$tmdbKey&language=en-US"
+            ).parsedSafe<TmdbSeasonDetail>()
 
-                    episodes.add(
-                        newEpisode("nxid://$tmdbId|tv|$seasonNum|$epNum") {
-                            this.name = ep.optString("name").takeIf { it.isNotBlank() }
-                            this.season = seasonNum
-                            this.episode = epNum
-                            this.posterUrl = ep.optString("still_path").takeIf { it.isNotBlank() }
-                                ?.let { "$TMDB_IMAGE$it" }
-                            this.description = ep.optString("overview").takeIf { it.isNotBlank() }
-                        }
-                    )
-                }
-            }
-
-            newTvSeriesLoadResponse(showName, url, TvType.TvSeries, episodes) {
-                this.posterUrl = posterPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
-                this.backgroundPosterUrl = backdropPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
-                this.plot = overview.takeIf { it.isNotBlank() }
-                this.year = year
-            }
-        } else {
-            val raw = app.get("$TMDB_BASE/movie/$tmdbId?api_key=$TMDB_API_KEY").text
-            val data = try { JSONObject(raw) } catch (_: Exception) { return null }
-
-            val title = data.optString("title").takeIf { it.isNotBlank() } ?: "Unknown"
-            val overview = data.optString("overview")
-            val posterPath = data.optString("poster_path")
-            val backdropPath = data.optString("backdrop_path")
-            val year = data.optString("release_date").take(4).toIntOrNull()
-
-            newMovieLoadResponse(title, url, TvType.Movie, "nxid://$tmdbId|movie|1|1") {
-                this.posterUrl = posterPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
-                this.backgroundPosterUrl = backdropPath.takeIf { it.isNotBlank() }?.let { "$TMDB_IMAGE$it" }
-                this.plot = overview.takeIf { it.isNotBlank() }
-                this.year = year
+            sDetail?.episodes?.forEach { ep ->
+                val popcornUrl = "$mainUrl/episode/$slug/$sNum-${ep.episodeNumber}"
+                episodes.add(newEpisode(
+                    DataHolder(data.tmdbId, "episode", popcornUrl).toJson()
+                ) {
+                    name        = ep.name
+                    season      = sNum
+                    episode     = ep.episodeNumber
+                    posterUrl   = ep.stillPath?.let { tmdbImg + it }
+                    description = ep.overview
+                })
             }
         }
-    }
 
-    private fun md5(data: ByteArray): ByteArray {
-        return MessageDigest.getInstance("MD5").digest(data)
-    }
-
-    private fun evpBytesToKey(
-        password: ByteArray,
-        salt: ByteArray,
-        keySize: Int = 32,
-        ivSize: Int = 16
-    ): Pair<ByteArray, ByteArray> {
-        val targetSize = keySize + ivSize
-        val derived = ArrayList<Byte>()
-        var block = ByteArray(0)
-
-        while (derived.size < targetSize) {
-            val input = block + password + salt
-            block = md5(input)
-            block.forEach { derived.add(it) }
-        }
-
-        val all = derived.toByteArray()
-        return all.copyOfRange(0, keySize) to all.copyOfRange(keySize, keySize + ivSize)
-    }
-
-    // FIX 3: Build JSONObject explicitly to avoid Boolean serialization bugs
-    private fun encodeData(obj: JSONObject): String {
-        return try {
-            obj.put("_req_ts", System.currentTimeMillis())
-            obj.put("_req_salt", Math.random().toString().substring(2).take(10))
-
-            val json = obj.toString()
-            val salt = ByteArray(8)
-            SecureRandom().nextBytes(salt)
-
-            val password = NX_KEY.toByteArray(Charsets.UTF_8)
-            val (key, iv) = evpBytesToKey(password, salt)
-
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            cipher.init(
-                Cipher.ENCRYPT_MODE,
-                SecretKeySpec(key, "AES"),
-                IvParameterSpec(iv)
-            )
-
-            val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
-            val openssl = "Salted__".toByteArray(Charsets.UTF_8) + salt + encrypted
-
-            Base64.encodeToString(openssl, Base64.NO_WRAP)
-                .replace("+", "-")
-                .replace("/", "_")
-                .replace("=", "")
-        } catch (_: Exception) {
-            ""
+        return newTvSeriesLoadResponse(
+            name     = detail.name,
+            url      = DataHolder(data.tmdbId, "tv", "$mainUrl/").toJson(),
+            type     = TvType.TvSeries,
+            episodes = episodes
+        ) {
+            posterUrl           = detail.posterPath?.let { tmdbImg + it }
+            backgroundPosterUrl = detail.backdropPath?.let { tmdbImgBg + it }
+            plot                = detail.overview
+            year                = detail.firstAirDate?.take(4)?.toIntOrNull()
+            rating              = (detail.voteAverage * 10).toInt()
+            tags                = detail.genres?.map { it.name }
         }
     }
 
-    private fun decodeData(encrypted: String): JSONObject? {
-        return try {
-            var base64 = encrypted.replace("-", "+").replace("_", "/")
-            while (base64.length % 4 != 0) base64 += "="
-
-            val raw = Base64.decode(base64, Base64.DEFAULT)
-            if (raw.size < 16) return null
-
-            val header = String(raw.copyOfRange(0, 8), Charsets.UTF_8)
-            if (header != "Salted__") return null
-
-            val salt = raw.copyOfRange(8, 16)
-            val cipherText = raw.copyOfRange(16, raw.size)
-
-            val password = NX_KEY.toByteArray(Charsets.UTF_8)
-            val (key, iv) = evpBytesToKey(password, salt)
-
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(key, "AES"),
-                IvParameterSpec(iv)
-            )
-
-            val decrypted = cipher.doFinal(cipherText)
-            val json = JSONObject(String(decrypted, Charsets.UTF_8))
-
-            json.remove("_req_ts")
-            json.remove("_req_salt")
-
-            json
-        } catch (_: Exception) {
-            null
-        }
-    }
-
+    // ── LOAD LINKS ────────────────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        android.util.Log.e("NX_DEBUG", "loadLinks() raw data=$data")
-        val idMatch = Regex("""(\d+)\|(tv|movie)\|?(\d*)\|?(\d*)""").find(data)
-        val tmdbId = idMatch?.groupValues?.get(1) ?: return false
-        val type = idMatch.groupValues[2]
-        val season = idMatch.groupValues[3].toIntOrNull() ?: 1
-        val episode = idMatch.groupValues[4].toIntOrNull() ?: 1
-        android.util.Log.e("NX_DEBUG", "loadLinks() tmdbId=$tmdbId type=$type s=$season e=$episode")
-        val type = parts.getOrNull(1) ?: "movie"
-        val season = parts.getOrNull(2)?.toIntOrNull() ?: 1
-        val episode = parts.getOrNull(3)?.toIntOrNull() ?: 1
+        val holder     = parseJson<DataHolder>(data)
+        val popcornUrl = holder.popcornUrl ?: return false
 
-        val headers = mapOf(
-            "Referer" to mainUrl,
-            "Origin" to mainUrl,
-            "User-Agent" to "Mozilla/5.0"
-        )
+        // Step 1: Fetch popcornmovies page
+        val pageText = app.get(popcornUrl, headers = pcHeaders).text
 
-        // FIX 2: Fetch real IMDb ID from TMDB external IDs
-        val mediaPath = if (type == "tv") "tv" else "movie"
-        val imdbId = try {
-            app.get("$TMDB_BASE/$mediaPath/$tmdbId/external_ids?api_key=$TMDB_API_KEY")
-                .parsedSafe<TMDBExternalIds>()?.imdbId ?: ""
-        } catch (_: Exception) { "" }
+        // Step 2: Extract td, sign, signBucket from embedded Alpine.js data
+        val td     = pageText.extractVal("trackingData") ?: run {
+            // Fallback: build td manually from tmdbId
+            val title = pageText.extractVal("mediaTitle") ?: return false
+            val year  = pageText.extractVal("mediaYear") ?: ""
+            Base64.encodeToString(
+                "${holder.tmdbId}::$title::$year".toByteArray(),
+                Base64.NO_WRAP
+            )
+        }
+        val sign   = pageText.extractVal("sign")   ?: return false
+        val bucket = pageText.extractVal("signBucket") ?: return false
 
-        var found = false
+        // Step 3: Call /api/central/sources for each provider
+        val providers = listOf("up_vidrock", "aldebaran", "yoru", "gamma", "nova")
+        var foundAny  = false
 
-        try {
-            // FIX 3: Build JSONObject directly — avoids Boolean/type serialization issues
-            val serversPayload = JSONObject().apply {
-                put("tmdbId", tmdbId)
-                put("imdb_id", imdbId)
-                put("type", type)
-                put("season", season)
-                put("episode", episode)
-            }
+        providers.forEach { provider ->
+            try {
+                val resp = app.get(
+                    "$mainUrl/api/central/sources?td=${td.encodeUrl()}&provider=$provider",
+                    headers = mapOf(
+                        "Accept"         to "application/json",
+                        "X-Sign"         to sign,
+                        "X-Sign-Bucket"  to bucket,
+                        "Referer"        to popcornUrl,
+                        "X-Requested-With" to "XMLHttpRequest"
+                    )
+                )
+                if (!resp.isSuccessful) return@forEach
 
-            val serversEncoded = encodeData(serversPayload)
-            if (serversEncoded.isEmpty()) return false
+                val json = resp.parsedSafe<CentralResponse>() ?: return@forEach
+                if (json.success != true) return@forEach
 
-            val serversResponse = app.get(
-                "$mainUrl/api/servers?q=$serversEncoded",
-                headers = headers
-            ).text
-
-            val serversHash = JSONObject(serversResponse).optString("_hash")
-            val serversJson = decodeData(serversHash) ?: return false
-            val servers = serversJson.optJSONArray("servers") ?: JSONArray()
-
-            for (i in 0 until servers.length()) {
-                val server = servers.optJSONObject(i) ?: continue
-
-                // FIX 4: Only skip if web_support is explicitly false (not missing)
-                if (server.has("web_support") && !server.optBoolean("web_support", true)) {
-                    continue
-                }
-
-                val scraper = server.optString("scraper")
-                if (scraper.isBlank()) continue
-
-                // FIX 3: Build JSONObject directly — ex_lang as real Boolean
-                val sourcesPayload = JSONObject().apply {
-                    put("ex_lang", false)
-                    put("provider", scraper)
-                    put("tmdbId", tmdbId)
-                    put("imdb_id", imdbId)
-                    put("type", type)
-                    put("season", season)
-                    put("episode", episode)
-                }
-
-                val sourcesEncoded = encodeData(sourcesPayload)
-                if (sourcesEncoded.isEmpty()) continue
-
-                val sourcesResponse = app.get(
-                    "$mainUrl/api/sources?q=$sourcesEncoded",
-                    headers = headers
-                ).text
-
-                val sourcesHash = JSONObject(sourcesResponse).optString("_hash")
-                val sourcesJson = decodeData(sourcesHash) ?: continue
-                val sources = sourcesJson.optJSONArray("sources") ?: continue
-
-                for (j in 0 until sources.length()) {
-                    val source = sources.optJSONObject(j) ?: continue
-                    val streamUrl = source.optString("url")
-                    if (streamUrl.isBlank()) continue
-
-                    if (source.optBoolean("isEmbed", false)) {
-                        if (loadExtractor(streamUrl, mainUrl, subtitleCallback, callback)) {
-                            found = true
+                json.data?.forEach { serverData ->
+                    val label = serverData.label ?: provider
+                    serverData.sources?.forEach { source ->
+                        val streamUrl = source.url ?: return@forEach
+                        val isHls     = source.type == "hls" || streamUrl.contains(".m3u8")
+                        val quality   = when (source.quality) {
+                            "1080" -> Qualities.P1080.value
+                            "720"  -> Qualities.P720.value
+                            "480"  -> Qualities.P480.value
+                            "360"  -> Qualities.P360.value
+                            else   -> Qualities.Unknown.value
                         }
-                        continue
+
+                        callback(ExtractorLink(
+                            source   = this.name,
+                            name     = "PopcornMovies • $label",
+                            url      = streamUrl,
+                            referer  = "$mainUrl/",
+                            quality  = quality,
+                            isM3u8   = isHls,
+                            headers  = mapOf("Referer" to "$mainUrl/")
+                        ))
+                        foundAny = true
                     }
 
-                    val isM3u8 = streamUrl.contains(".m3u8", true) ||
-                        source.optString("type").contains("hls", true)
-
-                    callback(
-                        newExtractorLink(
-                            source = server.optString("name", name),
-                            name = source.optString("quality", server.optString("name", name)),
-                            url = streamUrl,
-                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.referer = mainUrl
-                            this.quality = when (source.optString("quality", "").lowercase()) {
-                                "2160p", "4k" -> Qualities.P2160.value
-                                "1080p", "fhd" -> Qualities.P1080.value
-                                "720p", "hd" -> Qualities.P720.value
-                                "480p", "sd" -> Qualities.P480.value
-                                "360p" -> Qualities.P360.value
-                                else -> Qualities.Unknown.value
-                            }
-                        }
-                    )
-                    found = true
+                    // Handle subtitles
+                    serverData.subtitles?.forEach { sub ->
+                        val subUrl  = sub.url  ?: return@forEach
+                        val subLang = sub.lang ?: "Unknown"
+                        subtitleCallback(SubtitleFile(subLang, subUrl))
+                    }
                 }
+            } catch (e: Exception) {
+                // Provider unavailable, skip silently
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
-
-        return found
+        return foundAny
     }
-}
 
-@CloudstreamPlugin
-class NXPlugin : Plugin() {
-    override fun load(manager: Context) {
-        registerMainAPI(NX())
+    // ── HELPERS ───────────────────────────────────────────────────────────────
+
+    // Build popcornmovies slug from title + year
+    // e.g. "The Dark Knight" 2008 → "the-dark-knight-2008"
+    private fun buildSlug(title: String, year: Int?): String {
+        val base = title.lowercase()
+            .replace(Regex("[^a-z0-9\\s-]"), "")
+            .trim()
+            .replace(Regex("\\s+"), "-")
+        return if (year != null) "$base-$year" else base
     }
+
+    // Extract value from Alpine.js data string in page HTML
+    // Matches patterns like: key: 'value' or key: "value"
+    private fun String.extractVal(key: String): String? {
+        return Regex("""$key:\s*['"]([^'"]+)['"]""").find(this)?.groupValues?.get(1)
+    }
+
+    private fun String.encodeUrl() = java.net.URLEncoder.encode(this, "UTF-8")
+
+    // ── TMDB HELPERS ─────────────────────────────────────────────────────────
+    private fun TmdbResult.toSearchResponse(): SearchResponse? {
+        val t      = title ?: name ?: return null
+        val isMovie = mediaType == "movie" || (mediaType == null && title != null)
+        val holder = DataHolder(id ?: return null, if (isMovie) "movie" else "tv", null)
+
+        return if (isMovie) {
+            newMovieSearchResponse(t, holder.toJson(), TvType.Movie) {
+                posterUrl = posterPath?.let { tmdbImg + it }
+            }
+        } else {
+            newTvSeriesSearchResponse(t, holder.toJson(), TvType.TvSeries) {
+                posterUrl = posterPath?.let { tmdbImg + it }
+            }
+        }
+    }
+
+    // ── DATA CLASSES ─────────────────────────────────────────────────────────
+    data class DataHolder(
+        val tmdbId:    Int,
+        val type:      String,  // "movie" | "tv" | "episode"
+        val popcornUrl: String?
+    )
+
+    data class TmdbPage(val results: List<TmdbResult> = emptyList())
+
+    data class TmdbResult(
+        val id:           Int?,
+        val title:        String?,
+        val name:         String?,
+        val posterPath:   String?,
+        val backdropPath: String?,
+        val mediaType:    String?,
+        val releaseDate:  String?,
+        val firstAirDate: String?
+    )
+
+    data class TmdbMovieDetail(
+        val id:          Int,
+        val title:       String,
+        val overview:    String?,
+        val posterPath:  String?,
+        val backdropPath:String?,
+        val releaseDate: String?,
+        val voteAverage: Double = 0.0,
+        val genres:      List<Genre>?
+    )
+
+    data class TmdbTvDetail(
+        val id:           Int,
+        val name:         String,
+        val overview:     String?,
+        val posterPath:   String?,
+        val backdropPath: String?,
+        val firstAirDate: String?,
+        val voteAverage:  Double = 0.0,
+        val genres:       List<Genre>?,
+        val seasons:      List<TmdbSeason>?
+    )
+
+    data class TmdbSeason(val seasonNumber: Int, val episodeCount: Int)
+
+    data class TmdbSeasonDetail(val episodes: List<TmdbEpisode> = emptyList())
+
+    data class TmdbEpisode(
+        val episodeNumber: Int,
+        val name:          String?,
+        val overview:      String?,
+        val stillPath:     String?
+    )
+
+    data class Genre(val name: String)
+
+    // /api/central/sources response
+    data class CentralResponse(
+        val success: Boolean?,
+        val data:    List<ServerData>?
+    )
+
+    data class ServerData(
+        val provider:  String?,
+        val label:     String?,
+        val sources:   List<StreamSource>?,
+        val subtitles: List<SubtitleSource>?
+    )
+
+    data class StreamSource(
+        val url:     String?,
+        val type:    String?,   // "hls" | "mp4"
+        val quality: String?    // "auto" | "1080" | "720" etc
+    )
+
+    data class SubtitleSource(
+        val url:  String?,
+        val lang: String?
+    )
 }
